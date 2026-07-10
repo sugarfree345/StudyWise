@@ -4,10 +4,49 @@ const API_BASE = '/api'
 
 export interface DocumentInfo {
   id: number
+  project_id: number
   filename: string
-  stored_path: string
   page_count: number
+  summary: string
+  table_of_contents: string
   created_at: string
+  parse_status: 'pending' | 'processing' | 'ready' | 'failed'
+  processed_pages: number
+  parse_error: string | null
+}
+
+export interface ProjectInfo {
+  id: number
+  name: string
+  summary: string
+  document_ids: number[]
+  created_at: string
+  updated_at: string
+}
+
+export interface PageInfo {
+  id: number
+  document_id: number
+  page_number: number
+  summary: string
+  text: string
+  markdown: string
+  image_ids: number[]
+  render_available: boolean
+}
+
+export interface ImageInfo {
+  id: number
+  page_id: number | null
+  document_id: number
+  page_number: number
+  image_index: number
+  filename: string
+  mime_type: string
+  summary: string
+  is_useful: boolean | null
+  importance: number
+  retrieval_count: number
 }
 
 export interface PageText {
@@ -38,8 +77,55 @@ export function uploadDocument(file: File) {
   return request<DocumentInfo>('/documents', { method: 'POST', body: form })
 }
 
+export function listProjects() {
+  return request<ProjectInfo[]>('/projects')
+}
+
+export function createProject(name: string, summary = '') {
+  return request<ProjectInfo>('/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, summary }),
+  })
+}
+
+export function listProjectDocuments(projectId: number) {
+  return request<DocumentInfo[]>(`/projects/${projectId}/documents`)
+}
+
+export function uploadProjectDocument(projectId: number, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return request<DocumentInfo>(`/projects/${projectId}/documents`, {
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function reparseDocument(id: number) {
+  return request<DocumentInfo>(`/documents/${id}/reparse`, { method: 'POST' })
+}
+
 export function getPageText(documentId: number, pageNumber: number) {
   return request<PageText>(`/documents/${documentId}/pages/${pageNumber}/text`)
+}
+
+export function listPages(documentId: number) {
+  return request<PageInfo[]>(`/documents/${documentId}/pages`)
+}
+
+export function getPage(documentId: number, pageNumber: number) {
+  return request<PageInfo>(`/documents/${documentId}/pages/${pageNumber}`)
+}
+
+export function listPageImages(documentId: number, pageNumber: number) {
+  return request<ImageInfo[]>(
+    `/documents/${documentId}/pages/${pageNumber}/images`,
+  )
+}
+
+export function imageFileUrl(imageId: number) {
+  return `${API_BASE}/images/${imageId}`
 }
 
 /** PDF 原文件地址，左侧窗格直接加载。 */

@@ -7,6 +7,7 @@ from loguru import logger
 from app.api.router import api_router
 from app.core.config import settings
 from app.db import create_db_and_tables
+from app.services.document_processing import document_processing_manager
 from app.services.llm.profiles import load_profiles, profiles_path
 
 
@@ -21,7 +22,16 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.info("已加载 {} 个模型档案", len(load_profiles()))
-    yield
+    if not settings.paddleocr_api_token:
+        logger.warning(
+            "尚未配置 PaddleOCR：请在 backend/.env 填写 "
+            "STUDYWISE_PADDLEOCR_API_TOKEN"
+        )
+    await document_processing_manager.start()
+    try:
+        yield
+    finally:
+        await document_processing_manager.stop()
 
 
 app = FastAPI(title="StudyWise API", version="0.1.0", lifespan=lifespan)
@@ -39,4 +49,9 @@ app.include_router(api_router, prefix="/api")
 
 @app.get("/api/health", tags=["meta"])
 def health() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "paddleocr_configured": bool(settings.paddleocr_api_token),
+        "openai_configured": bool(settings.openai_api_key),
+        "anthropic_configured": bool(settings.anthropic_api_key),
+    }

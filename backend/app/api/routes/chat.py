@@ -8,7 +8,6 @@
 
 import json
 from collections.abc import AsyncIterator
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -18,9 +17,9 @@ from sqlmodel import Session
 from app.db import get_session
 from app.models import Document
 from app.schemas.chat import ChatRequest
-from app.services import pdf_service
 from app.services.llm import get_provider
 from app.services.llm.profiles import PublicProfile, get_profile, load_profiles
+from app.services.study_content_service import get_page_content
 
 router = APIRouter(tags=["chat"])
 
@@ -34,11 +33,17 @@ def list_models() -> list[PublicProfile]:
     ]
 
 
-def _build_system(document: Document, page_number: int) -> str:
-    text = pdf_service.get_page_text(Path(document.stored_path), page_number)
+def _build_system(document: Document, page_number: int, session: Session) -> str:
+    if document.id is None:
+        raise RuntimeError("文档尚未持久化")
+    try:
+        page = get_page_content(session, document.id, page_number)
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail="该页面正在解析，请稍后再试") from exc
     return (
         f"你是一个学习辅助助手。用户正在阅读《{document.filename}》的第 {page_number} 页。\n"
-        f"以下是本页的文字内容：\n\n{text}\n\n"
+        f"以下是 PaddleOCR 解析出的本页 Markdown 内容：\n\n{page['markdown']}\n\n"
+        f"本页可按 ID 查询的图片：{page['image_ids']}。\n"
         "请围绕本页内容回答用户的提问，必要时可以出小测验。"
     )
 
@@ -71,7 +76,7 @@ def chat(
         raise HTTPException(status_code=400, detail=f"未配置模型档案：{body.profile}")
 
     provider = get_provider(profile)
-    system = _build_system(document, page_number)
+    system = _build_system(document, page_number, session)
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
     return StreamingResponse(

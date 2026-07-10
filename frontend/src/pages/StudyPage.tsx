@@ -22,11 +22,18 @@ export default function StudyPage() {
     queryKey: ['documents', id],
     queryFn: () => getDocument(id),
     enabled: Number.isFinite(id),
+    refetchInterval: (query) => {
+      const status = query.state.data?.parse_status
+      return status === 'pending' || status === 'processing' ? 1500 : false
+    },
   })
+  const documentPageCount = doc?.page_count
 
   useEffect(() => {
-    if (doc) setPageCount(doc.page_count)
-  }, [doc, setPageCount])
+    if (documentPageCount && documentPageCount > 0) {
+      setPageCount(documentPageCount)
+    }
+  }, [documentPageCount, setPageCount])
 
   if (isLoading) {
     return <p className="p-6 text-muted-foreground">加载中…</p>

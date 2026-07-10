@@ -1,3 +1,15 @@
-from app.models.document import Document, ImageAsset
+from app.models.document import (
+    Document,
+    DocumentPage,
+    DocumentProcessing,
+    ImageAsset,
+    Project,
+)
 
-__all__ = ["Document", "ImageAsset"]
+__all__ = [
+    "Project",
+    "Document",
+    "DocumentProcessing",
+    "DocumentPage",
+    "ImageAsset",
+]

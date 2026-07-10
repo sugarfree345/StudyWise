@@ -39,25 +39,28 @@ StudyWise/
 ```powershell
 cd backend
 uv sync
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload --reload-dir app
 ```
 
-首次使用前创建本机模型配置：
+首次使用前创建统一的密钥配置和模型档案：
 
 ```powershell
 cd backend
+Copy-Item .env.example .env
 New-Item -ItemType Directory -Force -Path data
 Copy-Item models.example.json data\models.json
 ```
 
-编辑 `backend/data/models.json`，为每个模型填写 `api_key`、`model_id` 和
-`base_url`。`style` 只支持两种值：
+在 `backend/.env` 填写 `STUDYWISE_PADDLEOCR_API_TOKEN` 和所使用的
+LLM 密钥。密钥只存放在 `.env`，不会进入模型档案或提交到版本库。
+
+`backend/data/models.json` 只管理 `model_id`、`base_url` 和 API 风格：
 
 - `openai`：OpenAI 及其兼容接口，例如 DeepSeek、通义、Kimi、Ollama、vLLM。
 - `anthropic`：Anthropic Messages API 及其兼容接口。
 
-前端只保存并提交档案名；密钥仅由后端读取，`backend/data/` 不会进入版本库。
-新增或切换模型通常只需修改此配置，无需改代码。
+上传后，后端把整份 PDF 提交给 PaddleOCR AI Studio Job API，轮询任务进度，
+再将 JSONL 结果拆分为 Page 与 ImageAsset。后端不会使用其他 PDF 解析器。
 
 前端（默认 <http://localhost:5173>，`/api` 已代理到后端）：
 
@@ -71,12 +74,23 @@ npm run dev
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/documents` | 上传 PDF |
-| GET | `/api/documents` | 文档列表 |
+| POST/GET | `/api/projects` | 创建或列出 Project |
+| GET/PATCH | `/api/projects/{id}` | 查询或更新 Project 简介 |
+| POST | `/api/projects/{id}/documents` | 向指定 Project 上传 PDF |
+| POST | `/api/documents` | 上传 PDF，并加入异步 OCR 队列 |
+| GET | `/api/documents` | 文档列表及解析状态 |
+| GET/PATCH | `/api/documents/{id}` | 查询或更新 PDF 简介、目录 |
 | GET | `/api/documents/{id}/file` | PDF 原文件（左侧窗格加载） |
-| GET | `/api/documents/{id}/pages/{n}/text` | 第 n 页文字 |
-| GET | `/api/documents/{id}/pages/{n}/images` | 第 n 页内嵌图片 |
-| GET | `/api/documents/{id}/pages/{n}/render` | 第 n 页整页渲染成 PNG |
+| POST | `/api/documents/{id}/reparse` | 重新解析失败或已有文档 |
+| GET | `/api/documents/{id}/pages` | PDF 的 Page 对象列表 |
+| GET/PATCH | `/api/documents/{id}/pages/{n}` | 查询 Page 全文、图片 ID 或更新简介 |
+| GET | `/api/documents/{id}/pages/{n}/text` | 第 n 页 OCR Markdown |
+| GET | `/api/documents/{id}/pages/{n}/json` | 第 n 页结构化 OCR JSON |
+| GET | `/api/documents/{id}/pages/{n}/images` | 第 n 页图片元数据 |
+| GET | `/api/documents/{id}/pages/{n}/images/{index}` | 获取单张 OCR 图片 |
+| GET | `/api/documents/{id}/pages/{n}/render` | PaddleOCR 返回的页面渲染图 |
+| GET | `/api/images/{id}` | 按图片 ID 获取原图 |
+| GET/PATCH | `/api/images/{id}/metadata` / `/api/images/{id}` | 查询或更新图片标签 |
 | GET | `/api/models` | 可用模型档案（不返回密钥） |
 | POST | `/api/documents/{id}/pages/{n}/chat` | 针对当前页进行 SSE 流式对话 |
 

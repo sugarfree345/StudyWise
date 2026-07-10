@@ -10,7 +10,6 @@ dependencies = [
     "loguru>=0.7.3",
     "openai>=2.45.0",
     "pydantic-settings>=2.14.2",
-    "pymupdf>=1.28.0",
     "python-multipart>=0.0.32",
     "sqlmodel>=0.0.39",
     "uvicorn[standard]>=0.51.0",
