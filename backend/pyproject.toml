@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "StudyWise 后端 API —— PDF 解析与 LLM 学习辅助"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=0.116.0",
     "fastapi>=0.139.0",
     "httpx>=0.28.1",
     "loguru>=0.7.3",
+    "openai>=2.45.0",
     "pydantic-settings>=2.14.2",
     "pymupdf>=1.28.0",
     "python-multipart>=0.0.32",

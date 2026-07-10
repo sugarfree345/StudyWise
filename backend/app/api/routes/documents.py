@@ -54,5 +54,8 @@ def get_document_file(
 ) -> FileResponse:
     document = get_document(document_id, session)
     return FileResponse(
-        document.stored_path, media_type="application/pdf", filename=document.filename
+        document.stored_path,
+        media_type="application/pdf",
+        filename=document.filename,
+        content_disposition_type="inline",
     )

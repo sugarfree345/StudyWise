@@ -24,9 +24,11 @@ StudyWise/
 │   │   ├── core/              # 配置（pydantic-settings）
 │   │   ├── db.py              # SQLModel + SQLite
 │   │   ├── models/            # Document、ImageAsset（图片元数据）
-│   │   ├── api/routes/        # documents（上传/列表/取文件）、pages（逐页取内容）
-│   │   └── services/          # pdf_service：页文字 / 页图片 / 整页渲染
-│   └── data/                  # 本地数据（gitignore）：上传的 PDF、SQLite
+│   │   ├── api/routes/        # 文档、页面内容、LLM 流式对话接口
+│   │   └── services/
+│   │       └── llm/           # OpenAI / Anthropic 双风格适配层
+│   ├── models.example.json    # 模型档案示例
+│   └── data/                  # 本地数据（gitignore）：PDF、SQLite、模型密钥
 └── 技术栈.md
 ```
 
@@ -39,6 +41,23 @@ cd backend
 uv sync
 uv run uvicorn app.main:app --reload
 ```
+
+首次使用前创建本机模型配置：
+
+```powershell
+cd backend
+New-Item -ItemType Directory -Force -Path data
+Copy-Item models.example.json data\models.json
+```
+
+编辑 `backend/data/models.json`，为每个模型填写 `api_key`、`model_id` 和
+`base_url`。`style` 只支持两种值：
+
+- `openai`：OpenAI 及其兼容接口，例如 DeepSeek、通义、Kimi、Ollama、vLLM。
+- `anthropic`：Anthropic Messages API 及其兼容接口。
+
+前端只保存并提交档案名；密钥仅由后端读取，`backend/data/` 不会进入版本库。
+新增或切换模型通常只需修改此配置，无需改代码。
 
 前端（默认 <http://localhost:5173>，`/api` 已代理到后端）：
 
@@ -58,12 +77,15 @@ npm run dev
 | GET | `/api/documents/{id}/pages/{n}/text` | 第 n 页文字 |
 | GET | `/api/documents/{id}/pages/{n}/images` | 第 n 页内嵌图片 |
 | GET | `/api/documents/{id}/pages/{n}/render` | 第 n 页整页渲染成 PNG |
+| GET | `/api/models` | 可用模型档案（不返回密钥） |
+| POST | `/api/documents/{id}/pages/{n}/chat` | 针对当前页进行 SSE 流式对话 |
 
-`pages` 系列接口对应 `backend/app/services/pdf_service.py` 里的三个工具函数，后续将作为 tools 暴露给大模型。
+对话接口根据请求中的模型档案选择 OpenAI 或 Anthropic Provider。两种 Provider
+对上层暴露相同的流式文本接口，协议差异不会进入 API 或前端。
 
 ## 设计构想（Roadmap）
 
-- [ ] **LLM 对话**：针对当前页提问，流式返回 Markdown 回答
+- [x] **LLM 对话**：双风格模型切换，针对当前页提问并流式返回 Markdown 回答
 - [ ] **小测验**：针对某个知识点快速生成 quiz
 - [ ] **图片打标**：大模型首次读到某页图片后打标——装饰性图片（循环图标、大脑图标之类）以后不再提取原图，只保留一句文字描述以节省 token；`ImageAsset` 已预留 `summary` / `is_useful` / `importance` / `retrieval_count` 元数据字段
 - [ ] **get_useful_images 工具**：只返回当前页"有用"的图片
