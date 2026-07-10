@@ -162,17 +162,17 @@ function parseSseEvent(chunk: string): ChatEvent | null {
 }
 
 /**
- * 对当前页发起流式提问。后端返回 SSE，这里解析成 ChatEvent 逐个吐出。
- * 后端无状态：每次把完整对话历史 messages 带上。
+ * 对整本文档发起流式提问，全文共用一段对话。后端返回 SSE，逐个吐出 ChatEvent。
+ * 后端无状态：每次把完整对话历史 messages 带上；currentPage 只用于标注当前浏览位置。
  */
 export async function* streamChat(
   documentId: number,
-  pageNumber: number,
+  currentPage: number,
   profile: string,
   messages: ChatMessage[],
 ): AsyncGenerator<ChatEvent> {
   const res = await fetch(
-    `${API_BASE}/documents/${documentId}/pages/${pageNumber}/chat`,
+    `${API_BASE}/documents/${documentId}/chat?page=${currentPage}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

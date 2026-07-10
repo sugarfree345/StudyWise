@@ -1,0 +1,178 @@
+"""页面与图片工具：让大模型按需读取某页正文、图片和整页渲染图，
+并为首次读到的图片写入判定（是否有用 / 简介 / 重要性）。
+
+图片语义遵循 ``ImageAsset`` 的约定：装饰性图片（is_useful=False）首次判定后
+不再回传原图，只用一句 summary 代替，以节省 token。
+"""
+
+from __future__ import annotations
+
+import json
+
+from app.services import study_content_service as content
+from app.services.llm.tools.base import (
+    ToolContext,
+    ToolImage,
+    ToolResult,
+    register,
+)
+
+_PAGE_NUMBER = {
+    "type": "integer",
+    "description": "页码，从 1 开始。",
+    "minimum": 1,
+}
+
+
+@register(
+    name="get_text",
+    description=(
+        "获取某个页码区间的 Markdown 正文（含首尾页），多页会按页拼接返回。"
+        "这是最常用的取文工具：用户问「当前页/这一页」时，把 first_page 和 "
+        "last_page 都设为当前页即可；需要上下文时再扩大区间。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "first_page": {**_PAGE_NUMBER, "description": "起始页码（含），从 1 开始。"},
+            "last_page": {**_PAGE_NUMBER, "description": "结束页码（含）。单页时与 first_page 相同。"},
+        },
+        "required": ["first_page", "last_page"],
+    },
+)
+def get_text(ctx: ToolContext, args: dict) -> ToolResult:
+    first_page = int(args["first_page"])
+    last_page = int(args["last_page"])
+    pages = content.get_pages_markdown(
+        ctx.session, ctx.document_id, first_page, last_page
+    )
+    body = "\n\n".join(
+        f"## 第 {page['page_number']} 页\n\n{page['markdown']}".rstrip()
+        for page in pages
+    )
+    return ToolResult(text=body)
+
+
+@register(
+    name="get_page_content",
+    description=(
+        "获取指定页的 Markdown 正文和该页图片的元数据列表。"
+        "先看元数据里的 summary 决定是否有必要再调用 get_image 取原图。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"page_number": _PAGE_NUMBER},
+        "required": ["page_number"],
+    },
+)
+def get_page_content(ctx: ToolContext, args: dict) -> ToolResult:
+    page_number = int(args["page_number"])
+    page = content.get_page_content(ctx.session, ctx.document_id, page_number)
+    images = content.list_page_images(ctx.session, ctx.document_id, page_number)
+    return ToolResult.json(
+        {"page_number": page_number, "markdown": page["markdown"], "images": images}
+    )
+
+
+@register(
+    name="get_image",
+    description=(
+        "按 id 获取一张图片的原图。若该图已被判定为装饰性（is_useful=false），"
+        "则只返回它的文字简介以节省 token。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"image_id": {"type": "integer", "description": "图片 id。"}},
+        "required": ["image_id"],
+    },
+)
+def get_image(ctx: ToolContext, args: dict) -> ToolResult:
+    image_id = int(args["image_id"])
+    meta = content.get_image_meta(ctx.session, image_id)
+    # 已判定为装饰性的图片不再回传原图，用简介代替。
+    if meta["is_useful"] is False:
+        return ToolResult.json(
+            {
+                "image_id": image_id,
+                "is_useful": False,
+                "note": "装饰性图片，已用简介代替原图。",
+                "summary": meta["summary"],
+            }
+        )
+    data, mime_type, _ = content.read_image_bytes(ctx.session, image_id)
+    return ToolResult(
+        text=json.dumps({"image_id": image_id, **meta}, ensure_ascii=False),
+        image=ToolImage(data=data, mime_type=mime_type),
+    )
+
+
+@register(
+    name="get_useful_images",
+    description="获取指定页中已被判定为有用（is_useful=true）的图片元数据列表。",
+    parameters={
+        "type": "object",
+        "properties": {"page_number": _PAGE_NUMBER},
+        "required": ["page_number"],
+    },
+)
+def get_useful_images(ctx: ToolContext, args: dict) -> ToolResult:
+    page_number = int(args["page_number"])
+    images = content.get_useful_images(ctx.session, ctx.document_id, page_number)
+    return ToolResult.json({"page_number": page_number, "images": images})
+
+
+@register(
+    name="get_page_render",
+    description=(
+        "获取整页的渲染大图（含版式与图文）。当页面排版复杂、"
+        "仅靠 Markdown 无法理解时使用。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"page_number": _PAGE_NUMBER},
+        "required": ["page_number"],
+    },
+)
+def get_page_render(ctx: ToolContext, args: dict) -> ToolResult:
+    page_number = int(args["page_number"])
+    path = content.get_page_render_path(ctx.session, ctx.document_id, page_number)
+    return ToolResult(
+        text=json.dumps({"page_number": page_number}, ensure_ascii=False),
+        image=ToolImage(data=path.read_bytes(), mime_type=content.guess_image_mime(path)),
+    )
+
+
+@register(
+    name="classify_image",
+    description=(
+        "为一张首次读到的图片写入判定：是否有用、一句话简介、重要性评分。"
+        "装饰性/无信息量的图片请标 is_useful=false，之后系统不再回传其原图。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "image_id": {"type": "integer", "description": "图片 id。"},
+            "is_useful": {
+                "type": "boolean",
+                "description": "是否含有对学习有价值的信息。",
+            },
+            "summary": {"type": "string", "description": "一句话概括图片内容。"},
+            "importance": {
+                "type": "integer",
+                "description": "重要性评分，0（无关）到 5（关键）。",
+                "minimum": 0,
+                "maximum": 5,
+            },
+        },
+        "required": ["image_id", "is_useful", "summary", "importance"],
+    },
+)
+def classify_image(ctx: ToolContext, args: dict) -> ToolResult:
+    meta = content.classify_image(
+        ctx.session,
+        int(args["image_id"]),
+        is_useful=bool(args["is_useful"]),
+        summary=str(args["summary"]),
+        importance=int(args["importance"]),
+    )
+    return ToolResult.json({"ok": True, **meta})

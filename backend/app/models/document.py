@@ -80,8 +80,8 @@ class ImageAsset(SQLModel, table=True):
     filename: str = ""
     stored_path: str = ""
     mime_type: str = "image/png"
-    summary: str = ""              # 概括简介（大模型生成）
-    is_useful: bool | None = None  # None = 尚未标注
+    summary: str = ""              # 概括简介（大模型生成）OCR 识别后先是为空, 后续第一次被大模型读到后生成, 后续不再更新
+    is_useful: bool | None = None  # None = 尚未标注, 第一次被大模型读到后标注, 后续不再更新, 如果是false ,则说明这个图片就是装饰性图片, 不需要提取原图
     importance: int = 0            # 重要性评分
     retrieval_count: int = 0       # 被检索次数
     created_at: datetime = Field(default_factory=utc_now)

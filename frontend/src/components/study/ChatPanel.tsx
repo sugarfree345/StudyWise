@@ -28,13 +28,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const pageReady = doc.parse_status === 'ready'
-
-  // 换页 = 换一段对话上下文，清空历史
-  useEffect(() => {
-    setMessages([])
-    setError(null)
-  }, [currentPage])
+  const docReady = doc.parse_status === 'ready'
 
   // 首次使用或本地保存的档案已被删除时，选中第一个可用模型
   useEffect(() => {
@@ -50,7 +44,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
 
   async function send() {
     const question = input.trim()
-    if (!question || streaming || !selectedProfile || !pageReady) return
+    if (!question || streaming || !selectedProfile || !docReady) return
 
     const history: ChatMessage[] = [...messages, { role: 'user', content: question }]
     setMessages([...history, { role: 'assistant', content: '' }])
@@ -105,9 +99,9 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
         {messages.length === 0 && (
           <p className="text-sm text-muted-foreground">
-            {pageReady
-              ? `针对第 ${currentPage} 页提问，或让模型出一道小测验。`
-              : `第 ${currentPage} 页正在进行 OCR 解析，完成后即可提问。`}
+            {docReady
+              ? '就整本文档提问，或让模型出一道小测验；左侧滚动阅读不会中断对话。'
+              : '文档正在进行 OCR 解析，完成后即可提问。'}
           </p>
         )}
         {messages.map((m, i) => (
@@ -134,7 +128,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            disabled={!pageReady}
+            disabled={!docReady}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
@@ -142,16 +136,16 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
               }
             }}
             placeholder={
-              pageReady
+              docReady
                 ? '输入问题，Enter 发送，Shift+Enter 换行'
-                : '等待当前页 OCR 解析完成'
+                : '等待文档 OCR 解析完成'
             }
             rows={2}
             className="flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm"
           />
           <button
             onClick={() => void send()}
-            disabled={streaming || !input.trim() || !selectedProfile || !pageReady}
+            disabled={streaming || !input.trim() || !selectedProfile || !docReady}
             className="rounded-md bg-primary p-2 text-primary-foreground transition-opacity disabled:opacity-40"
             aria-label="发送"
           >
