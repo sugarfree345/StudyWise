@@ -1,0 +1,15 @@
+[project]
+name = "studywise-backend"
+version = "0.1.0"
+description = "StudyWise 后端 API —— PDF 解析与 LLM 学习辅助"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.139.0",
+    "httpx>=0.28.1",
+    "loguru>=0.7.3",
+    "pydantic-settings>=2.14.2",
+    "pymupdf>=1.28.0",
+    "python-multipart>=0.0.32",
+    "sqlmodel>=0.0.39",
+    "uvicorn[standard]>=0.51.0",
+]
