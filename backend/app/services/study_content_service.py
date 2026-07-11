@@ -253,6 +253,53 @@ def get_pages_markdown(
     ]
 
 
+def search_document_markdown(
+    session: Session, document_id: int, query: str, *, limit: int = 8
+) -> list[dict]:
+    """按关键词在文档 Markdown 中定位页面，返回轻量片段而不是全文。
+
+    这是“概念/公式记得但不知道页码”场景的第一步。查询按大小写不敏感的短语
+    匹配；由模型根据片段再调用 get_text 读取候选页及其上下文。
+    """
+    needle = query.strip()
+    if not needle:
+        raise ValueError("搜索关键词不能为空")
+
+    matched: list[tuple[int, int, str, str]] = []
+    folded_needle = needle.casefold()
+    pages = session.exec(
+        select(DocumentPage)
+        .where(DocumentPage.document_id == document_id)
+        .order_by(DocumentPage.page_number)
+    ).all()
+    for page in pages:
+        markdown = page.markdown or ""
+        index = markdown.casefold().find(folded_needle)
+        if index < 0:
+            continue
+        # 前后各保留少量文字，既足以判断相关性，也不会把全文塞进工具结果。
+        start = max(0, index - 140)
+        end = min(len(markdown), index + len(needle) + 260)
+        snippet = markdown[start:end].strip()
+        if start > 0:
+            snippet = f"…{snippet}"
+        if end < len(markdown):
+            snippet = f"{snippet}…"
+        occurrences = markdown.casefold().count(folded_needle)
+        matched.append((occurrences, page.page_number, needle, snippet))
+
+    matched.sort(key=lambda item: (-item[0], item[1]))
+    return [
+        {
+            "page_number": page_number,
+            "match_count": match_count,
+            "query": matched_query,
+            "snippet": snippet,
+        }
+        for match_count, page_number, matched_query, snippet in matched[:limit]
+    ]
+
+
 def get_useful_images(
     session: Session, document_id: int, page_number: int
 ) -> list[dict]:

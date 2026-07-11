@@ -42,7 +42,7 @@ class ToolLayerTests(unittest.TestCase):
             session.add(Project(id=1, name="测试项目"))
             document = Document(
                 id=1, project_id=1, filename="资料.pdf", stored_path="x.pdf",
-                page_count=1,
+                page_count=3,
             )
             session.add(document)
             page = DocumentPage(
@@ -50,6 +50,14 @@ class ToolLayerTests(unittest.TestCase):
                 markdown="# 第一页\n正文内容。", render_path=str(render_path),
             )
             session.add(page)
+            session.add(DocumentPage(
+                id=2, document_id=1, page_number=2,
+                markdown="# 第二页\n贝叶斯公式的前提。",
+            ))
+            session.add(DocumentPage(
+                id=3, document_id=1, page_number=3,
+                markdown="# 第三页\n贝叶斯公式的推导与解答。",
+            ))
             session.add(ImageAsset(
                 id=1, document_id=1, page_id=1, page_number=1, image_index=1,
                 stored_path=str(img_path), mime_type="application/octet-stream",
@@ -97,6 +105,21 @@ class ToolLayerTests(unittest.TestCase):
             self.ctx, "get_text", {"first_page": 5, "last_page": 8}
         )
         self.assertTrue(missing.is_error)
+
+    def test_current_page_context_and_document_search(self) -> None:
+        self.ctx.current_page = 3
+        current = tools.run_tool(
+            self.ctx, "get_current_page_context", {"before_pages": 1}
+        )
+        self.assertFalse(current.is_error)
+        self.assertIn("当前为第 3 页", current.text)
+        self.assertIn("第 2 页", current.text)
+        self.assertIn("第 3 页", current.text)
+
+        search = self._payload(
+            tools.run_tool(self.ctx, "search_document", {"query": "贝叶斯公式"})
+        )
+        self.assertEqual([match["page_number"] for match in search["matches"]], [2, 3])
 
     def test_get_image_returns_bytes_with_corrected_mime(self) -> None:
         result = tools.run_tool(self.ctx, "get_image", {"image_id": 1})
@@ -165,10 +188,12 @@ class ToolLayerTests(unittest.TestCase):
         self.assertEqual(len(tools.anthropic_tools()), len(tools.tool_specs()))
         self.assertEqual(tools.openai_tools()[0]["type"], "function")
         self.assertIn("input_schema", tools.anthropic_tools()[0])
-        # 7 个页面/图片/文本工具应全部注册
-        self.assertEqual(len(tools.tool_specs()), 7)
+        # 9 个页面/图片/文本工具应全部注册
+        self.assertEqual(len(tools.tool_specs()), 9)
         self.assertIn("get_text", tools.registered_names())
         self.assertIn("get_full_pdf_text", tools.registered_names())
+        self.assertIn("get_current_page_context", tools.registered_names())
+        self.assertIn("search_document", tools.registered_names())
 
 
 if __name__ == "__main__":

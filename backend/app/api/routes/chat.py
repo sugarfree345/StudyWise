@@ -55,7 +55,7 @@ def _build_system(document: Document, page_number: int, session: Session) -> str
 def _build_document_system(document: Document, session: Session) -> str:
     """轻量导航式 system 提示，**保持完全静态**（不含当前页等易变信息），
     以便作为稳定前缀命中 OpenAI 的提示缓存。每条用户问题都附有其提问时的
-    当前页，不进 system。
+    当前页不进 system；模型要读取用户界面当前页时，调用无页码的专用工具。
 
     正文不注入，由模型按需通过 get_text / get_image 等工具拉取。"""
     if document.id is None:
@@ -74,8 +74,14 @@ def _build_document_system(document: Document, session: Session) -> str:
         f"全书共 {document.page_count} 页。",
         "",
         "你默认看不到页面内容，必须主动调用工具按需获取正文与图片，不要凭空编造。",
-        "每条用户问题末尾都有「（提问时当前第 N 页……）」标记，"
-        "其中「这一页/当前页」即指该条问题标记的页码。回答前先用工具取到相关页内容；"
+        "先根据用户问题与对话历史确定回答对象，再决定读取哪些页；用户正在浏览的页面只是导航状态，"
+        "不能自动当作问题的主题。历史中偶尔会有「（提问时当前第 N 页……）」标记，"
+        "它只记录该条明确指向当前页的问题所对应的页码。",
+        "用户明确说「当前页/这一页/本页」或需要用当前页面消解指代时，先调用"
+        " get_current_page_context；它会返回实际页码和内容。若读到的页面是解答、推导、证明、续页，"
+        "引用前文/前式，或含有未定义的符号与条件，必须继续用 get_text 补读最少必要的相关页后再回答。",
+        "用户提到概念、公式或术语却不知道页码、且历史无法定位时，先用 search_document 找候选页，"
+        "再读取命中页；若仍无法唯一确定对象，应简洁追问，不能擅自读取当前页或编造。",
         "跨页追问时保持整段对话连贯，必要时可以出小测验。",
     ]
     if document.table_of_contents.strip():

@@ -147,6 +147,35 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("prompt_cache_key", create.await_args.kwargs)
         self.assertNotIn("prompt_cache_retention", create.await_args.kwargs)
 
+    async def test_luna_uses_none_reasoning_effort_when_tools_are_enabled(self):
+        from app.services.llm.tools import ToolSpec
+
+        stream = async_values(
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="A", tool_calls=None))]
+            )
+        )
+        create = AsyncMock(return_value=stream)
+        provider = OpenAIProvider.__new__(OpenAIProvider)
+        provider._profile = ModelProfile.model_construct(
+            name="luna", style="openai", model_id="gpt-5.6-luna", api_key="key",
+            base_url="https://api.openai.com/v1", max_tokens=123,
+        )
+        provider._client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+
+        _ = [
+            text
+            async for text in provider.stream_chat(
+                system="s",
+                messages=[{"role": "user", "content": "q"}],
+                tools=[ToolSpec(name="get_text", description="d", parameters={})],
+            )
+        ]
+
+        self.assertEqual(create.await_args.kwargs["reasoning_effort"], "none")
+
     async def test_anthropic_request_uses_top_level_system(self):
         stream = MagicMock()
         stream.__aenter__ = AsyncMock(return_value=stream)

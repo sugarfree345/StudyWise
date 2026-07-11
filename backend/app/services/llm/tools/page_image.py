@@ -75,6 +75,74 @@ def get_text(ctx: ToolContext, args: dict) -> ToolResult:
 
 
 @register(
+    name="get_current_page_context",
+    description=(
+        "读取用户界面当前打开的页及其相邻上下文，无需填写页码。"
+        "当用户明确提到「当前页/这一页/本页」或需要用当前页面来消解指代时使用。"
+        "结果会明确告诉你实际当前页码；若读到的页面依赖前文，可再用 get_text 精确补读。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "before_pages": {
+                "type": "integer",
+                "description": "额外读取当前页之前的页数，默认 0，最多 5。",
+                "minimum": 0,
+                "maximum": 5,
+            },
+            "after_pages": {
+                "type": "integer",
+                "description": "额外读取当前页之后的页数，默认 0，最多 5。",
+                "minimum": 0,
+                "maximum": 5,
+            },
+        },
+    },
+)
+def get_current_page_context(ctx: ToolContext, args: dict) -> ToolResult:
+    before_pages = min(5, max(0, int(args.get("before_pages", 0))))
+    after_pages = min(5, max(0, int(args.get("after_pages", 0))))
+    first_page = max(1, ctx.current_page - before_pages)
+    last_page = ctx.current_page + after_pages
+    pages = content.get_pages_markdown(
+        ctx.session, ctx.document_id, first_page, last_page
+    )
+    returned_first = pages[0]["page_number"]
+    returned_last = pages[-1]["page_number"]
+    return ToolResult(
+        text=(
+            f"用户界面当前为第 {ctx.current_page} 页；本次返回第 {returned_first}~{returned_last} 页。\n\n"
+            f"{_join_pages(pages)}"
+        )
+    )
+
+
+@register(
+    name="search_document",
+    description=(
+        "按关键词在整份 PDF 的已解析 Markdown 中定位相关页，返回页码和短片段，不返回全文。"
+        "当用户提到某个概念、公式或术语却不知道页码，且对话历史也无法定位时先调用本工具；"
+        "根据命中结果再调用 get_text 或 get_page_content 阅读必要页面。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "用于定位的独特术语、公式变量或短语；不要传整段长问题。",
+                "minLength": 1,
+            }
+        },
+        "required": ["query"],
+    },
+)
+def search_document(ctx: ToolContext, args: dict) -> ToolResult:
+    query = str(args["query"])
+    matches = content.search_document_markdown(ctx.session, ctx.document_id, query)
+    return ToolResult.json({"query": query, "matches": matches})
+
+
+@register(
     name="get_page_content",
     description=(
         "获取指定页的 Markdown 正文和该页图片的元数据列表。"

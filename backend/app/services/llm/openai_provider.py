@@ -30,6 +30,18 @@ def _token_limit_kwarg(model_id: str, max_tokens: int) -> dict:
     return {"max_tokens": max_tokens}
 
 
+def _reasoning_effort_kwarg(model_id: str, has_tools: bool) -> dict:
+    """补齐 GPT-5.6 Luna 在 Chat Completions 中的工具调用限制。
+
+    Luna 在此接口中只能以 reasoning_effort="none" 调用 function tools；
+    使用 Responses API 则没有这项组合限制。项目当前使用 Chat Completions，
+    因此仅在实际传入工具时显式选择兼容档位。
+    """
+    if model_id.lower() == "gpt-5.6-luna" and has_tools:
+        return {"reasoning_effort": "none"}
+    return {}
+
+
 def _is_official_openai_endpoint(base_url: str | None) -> bool:
     """只对 OpenAI 官方端点发送其专有缓存参数。
 
@@ -82,6 +94,7 @@ class OpenAIProvider:
                 "messages": conversation,
                 "stream": True,
                 **_token_limit_kwarg(self._profile.model_id, self._profile.max_tokens),
+                **_reasoning_effort_kwarg(self._profile.model_id, bool(tool_defs)),
             }
             if tool_defs:
                 kwargs["tools"] = tool_defs
