@@ -1,15 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Send, Trash2 } from 'lucide-react'
+import { Plus, Send } from 'lucide-react'
 
 import Markdown from '@/components/study/Markdown'
 import {
+  createConversation,
+  getConversation,
+  listConversations,
   listModels,
+  saveConversation,
   streamChat,
   type ChatMessage,
   type ChatUsage,
   type DocumentInfo,
+  type SavedChatMessage,
 } from '@/lib/api'
+import { queryClient } from '@/lib/queryClient'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useStudyStore } from '@/stores/useStudyStore'
 
@@ -27,21 +33,57 @@ function withPageContext(question: string, page: number): string {
   return `${question}\n\n（提问时当前第 ${page} 页；本问题中的「这一页/当前页」即指此页。）`
 }
 
-/** 针对当前页的对话面板：模型选择 + 流式回答 + Markdown 渲染。 */
+function conversationTitle(messages: ChatEntry[]): string {
+  const firstQuestion = messages.find((message) => message.role === 'user')?.content.trim()
+  return firstQuestion ? firstQuestion.replace(/\s+/g, ' ').slice(0, 32) : '新对话'
+}
+
+function toSavedMessage(message: ChatEntry): SavedChatMessage {
+  return {
+    role: message.role,
+    content: message.content,
+    request_content: message.requestContent,
+    input_tokens: message.usage?.input_tokens,
+    output_tokens: message.usage?.output_tokens,
+    cached_tokens: message.usage?.cached_tokens,
+    total_tokens: message.usage?.total_tokens,
+  }
+}
+
+function fromSavedMessage(message: SavedChatMessage): ChatEntry {
+  const usage =
+    message.input_tokens == null ||
+    message.output_tokens == null ||
+    message.cached_tokens == null ||
+    message.total_tokens == null
+      ? undefined
+      : {
+          input_tokens: message.input_tokens,
+          output_tokens: message.output_tokens,
+          cached_tokens: message.cached_tokens,
+          total_tokens: message.total_tokens,
+        }
+  return { role: message.role, content: message.content, requestContent: message.request_content ?? undefined, usage }
+}
+
+/** 针对当前页的对话面板：模型选择 + 可恢复会话 + 流式回答。 */
 export default function ChatPanel({ doc }: ChatPanelProps) {
   const currentPage = useStudyStore((s) => s.currentPage)
   const { selectedProfile, setSelectedProfile } = useSettingsStore()
-
   const { data: models = [] } = useQuery({ queryKey: ['models'], queryFn: listModels })
+  const { data: conversations = [] } = useQuery({
+    queryKey: ['conversations', doc.id],
+    queryFn: () => listConversations(doc.id),
+  })
 
   const [messages, setMessages] = useState<ChatEntry[]>([])
+  const [conversationId, setConversationId] = useState<number | null>(null)
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const docReady = doc.parse_status === 'ready'
 
-  // 首次使用或本地保存的档案已被删除时，选中第一个可用模型
   useEffect(() => {
     if (!models.some((model) => model.name === selectedProfile)) {
       const fallback = models[0]?.name ?? null
@@ -53,55 +95,80 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [messages])
 
+  function startNewConversation() {
+    if (streaming) return
+    setConversationId(null)
+    setMessages([])
+    setError(null)
+    setInput('')
+  }
+
+  async function restoreConversation(id: number) {
+    if (streaming) return
+    try {
+      const conversation = await getConversation(doc.id, id)
+      setConversationId(conversation.id)
+      setMessages(conversation.messages.map(fromSavedMessage))
+      setSelectedProfile(conversation.profile)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function persist(id: number, profile: string, entries: ChatEntry[]) {
+    await saveConversation(doc.id, id, profile, conversationTitle(entries), entries.map(toSavedMessage))
+    await queryClient.invalidateQueries({ queryKey: ['conversations', doc.id] })
+  }
+
   async function send() {
     const question = input.trim()
     if (!question || streaming || !selectedProfile || !docReady) return
 
-    // 每个问题在产生时就带上当前页，并永久保留在模型历史中。UI 仍只显示原问题。
     const requestContent = withPageContext(question, currentPage)
+    const userEntry: ChatEntry = { role: 'user', content: question, requestContent }
     const history: ChatMessage[] = [
-      ...messages.map(({ role, content, requestContent }) => ({
+      ...messages.map(({ role, content, requestContent: savedRequestContent }) => ({
         role,
-        content: requestContent ?? content,
+        content: savedRequestContent ?? content,
       })),
       { role: 'user', content: requestContent },
     ]
-    setMessages([
-      ...messages,
-      { role: 'user', content: question, requestContent },
-      { role: 'assistant', content: '' },
-    ])
+
+    let activeConversationId = conversationId
+    try {
+      if (activeConversationId === null) {
+        const created = await createConversation(doc.id, selectedProfile, conversationTitle([...messages, userEntry]))
+        activeConversationId = created.id
+        setConversationId(created.id)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      return
+    }
+
+    const initialEntries = [...messages, userEntry, { role: 'assistant' as const, content: '' }]
+    setMessages(initialEntries)
     setInput('')
     setStreaming(true)
     setError(null)
 
+    let answer = ''
+    let usage: ChatUsage | undefined
     try {
       for await (const ev of streamChat(doc.id, currentPage, selectedProfile, history)) {
         if (ev.type === 'delta') {
+          answer += ev.text
           setMessages((prev) => {
             const next = [...prev]
-            next[next.length - 1] = {
-              ...next[next.length - 1],
-              role: 'assistant',
-              content: next[next.length - 1].content + ev.text,
-            }
+            next[next.length - 1] = { ...next[next.length - 1], role: 'assistant', content: answer }
             return next
           })
         } else if (ev.type === 'usage') {
+          usage = ev
           setMessages((prev) => {
             const next = [...prev]
-            const last = next[next.length - 1]
-            if (last?.role === 'assistant') {
-              next[next.length - 1] = {
-                ...last,
-                usage: {
-                  input_tokens: ev.input_tokens,
-                  output_tokens: ev.output_tokens,
-                  cached_tokens: ev.cached_tokens,
-                  total_tokens: ev.total_tokens,
-                },
-              }
-            }
+            next[next.length - 1] = { ...next[next.length - 1], role: 'assistant', usage }
             return next
           })
         } else if (ev.type === 'error') {
@@ -111,77 +178,81 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setMessages((prev) => {
-        const last = prev[prev.length - 1]
-        return last?.role === 'assistant' && !last.content ? prev.slice(0, -1) : prev
-      })
+      const savedEntries: ChatEntry[] = answer
+        ? [...messages, userEntry, { role: 'assistant', content: answer, usage }]
+        : [...messages, userEntry]
+      setMessages(savedEntries)
       setStreaming(false)
+      try {
+        await persist(activeConversationId, selectedProfile, savedEntries)
+      } catch (e) {
+        setError(`对话保存失败：${e instanceof Error ? e.message : String(e)}`)
+      }
     }
   }
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <span className="text-sm text-muted-foreground">模型</span>
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
         <select
-          value={selectedProfile ?? ''}
-          onChange={(e) => setSelectedProfile(e.target.value)}
-          className="flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
+          value={conversationId ?? ''}
+          disabled={streaming}
+          onChange={(event) => {
+            const id = Number(event.target.value)
+            if (id) void restoreConversation(id)
+            else startNewConversation()
+          }}
+          aria-label="对话列表"
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
         >
-          {models.length === 0 && <option value="">未配置模型（见 models.example.json）</option>}
-          {models.map((m) => (
-            <option key={m.name} value={m.name}>
-              {m.name}（{m.style}）
+          <option value="">新对话</option>
+          {conversations.map((conversation) => (
+            <option key={conversation.id} value={conversation.id}>
+              {conversation.title}（{conversation.profile}）
             </option>
           ))}
         </select>
         <button
           type="button"
-          aria-label="清空会话"
-          title="清空当前会话"
-          disabled={streaming || messages.length === 0}
-          onClick={() => {
-            setMessages([])
-            setError(null)
-          }}
-          className="shrink-0 rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
+          aria-label="新建对话"
+          title="新建对话"
+          disabled={streaming}
+          onClick={startNewConversation}
+          className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
         >
-          <Trash2 className="size-4" />
+          <Plus className="size-4" />
         </button>
+        <span className="text-sm text-muted-foreground">模型</span>
+        <select
+          value={selectedProfile ?? ''}
+          onChange={(event) => setSelectedProfile(event.target.value)}
+          disabled={streaming}
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
+        >
+          {models.length === 0 && <option value="">未配置模型（见 models.example.json）</option>}
+          {models.map((model) => (
+            <option key={model.name} value={model.name}>
+              {model.name}（{model.style}）
+            </option>
+          ))}
+        </select>
       </div>
 
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
         {messages.length === 0 && (
           <p className="text-sm text-muted-foreground">
-            {docReady
-              ? '就整本文档提问，或让模型出一道小测验；左侧滚动阅读不会中断对话。'
-              : '文档正在进行 OCR 解析，完成后即可提问。'}
+            {docReady ? '选择已有对话，或开始一段新对话。' : '文档正在进行 OCR 解析，完成后即可提问。'}
           </p>
         )}
-        {messages.map((m, i) => (
-          <div
-            key={i}
-            className={
-              m.role === 'user' ? 'flex justify-end' : 'flex flex-col items-start'
-            }
-          >
-            <div
-              className={
-                m.role === 'user'
-                  ? 'max-w-[85%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground'
-                  : 'max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm'
-              }
-            >
-              {m.role === 'user' ? m.content : <Markdown>{m.content || '…'}</Markdown>}
+        {messages.map((message, index) => (
+          <div key={index} className={message.role === 'user' ? 'flex justify-end' : 'flex flex-col items-start'}>
+            <div className={message.role === 'user' ? 'max-w-[85%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground' : 'max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm'}>
+              {message.role === 'user' ? message.content : <Markdown>{message.content || '…'}</Markdown>}
             </div>
-            {m.role === 'assistant' && m.usage && (
+            {message.role === 'assistant' && message.usage && (
               <p className="mt-1 text-[11px] tabular-nums text-muted-foreground">
-                {m.usage.total_tokens.toLocaleString()} tokens（输入{' '}
-                {m.usage.input_tokens.toLocaleString()} · 输出{' '}
-                {m.usage.output_tokens.toLocaleString()}
-                {m.usage.cached_tokens > 0 &&
-                  ` · 缓存 ${m.usage.cached_tokens.toLocaleString()}`}
-                ）
+                {message.usage.total_tokens.toLocaleString()} tokens（输入 {message.usage.input_tokens.toLocaleString()} · 输出 {message.usage.output_tokens.toLocaleString()}
+                {message.usage.cached_tokens > 0 && ` · 缓存 ${message.usage.cached_tokens.toLocaleString()}`}）
               </p>
             )}
           </div>
@@ -193,28 +264,19 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
         <div className="flex items-end gap-2">
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            disabled={!docReady}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
+            onChange={(event) => setInput(event.target.value)}
+            disabled={!docReady || streaming}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
                 void send()
               }
             }}
-            placeholder={
-              docReady
-                ? '输入问题，Enter 发送，Shift+Enter 换行'
-                : '等待文档 OCR 解析完成'
-            }
+            placeholder={docReady ? '输入问题，Enter 发送，Shift+Enter 换行' : '等待文档 OCR 解析完成'}
             rows={2}
             className="flex-1 resize-none rounded-md border border-border bg-background px-3 py-2 text-sm"
           />
-          <button
-            onClick={() => void send()}
-            disabled={streaming || !input.trim() || !selectedProfile || !docReady}
-            className="rounded-md bg-primary p-2 text-primary-foreground transition-opacity disabled:opacity-40"
-            aria-label="发送"
-          >
+          <button onClick={() => void send()} disabled={streaming || !input.trim() || !selectedProfile || !docReady} className="rounded-md bg-primary p-2 text-primary-foreground transition-opacity disabled:opacity-40" aria-label="发送">
             <Send className="size-4" />
           </button>
         </div>

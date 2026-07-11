@@ -45,6 +45,43 @@ class DocumentProcessing(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class ChatConversation(SQLModel, table=True):
+    """一份文档下可恢复的一段学习对话。"""
+
+    id: int | None = Field(default=None, primary_key=True)
+    document_id: int = Field(foreign_key="document.id", index=True)
+    title: str = "新对话"
+    profile: str
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ChatConversationMessage(SQLModel, table=True):
+    """持久化的对话消息。
+
+    ``content`` 是界面展示的文字；``request_content`` 保留带页码的模型输入，
+    以便恢复后仍维持提示缓存友好的精确历史。
+    """
+
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id", "position", name="uq_chat_message_conversation_position"
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    conversation_id: int = Field(foreign_key="chatconversation.id", index=True)
+    position: int
+    role: str
+    content: str
+    request_content: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
+    total_tokens: int | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class DocumentPage(SQLModel, table=True):
     """PaddleOCR 返回的一页结构化内容。"""
 

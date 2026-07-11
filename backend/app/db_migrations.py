@@ -19,9 +19,21 @@ def migrate_schema(engine: Engine) -> None:
             "SELECT value FROM appmeta WHERE key = 'schema_version'"
         ).first()
         version = int(row[0]) if row else 0
-        if version >= 1:
-            return
+        if version < 1:
+            _migrate_v1(connection)
+            connection.exec_driver_sql(
+                "INSERT OR REPLACE INTO appmeta (key, value) VALUES ('schema_version', '1')"
+            )
+            version = 1
 
+        if version < 2:
+            _migrate_v2(connection)
+            connection.exec_driver_sql(
+                "INSERT OR REPLACE INTO appmeta (key, value) VALUES ('schema_version', '2')"
+            )
+
+
+def _migrate_v1(connection) -> None:
         _add_column(connection, "document", "project_id", "INTEGER DEFAULT 1")
         _add_column(connection, "document", "summary", "TEXT NOT NULL DEFAULT ''")
         _add_column(
@@ -81,9 +93,30 @@ def migrate_schema(engine: Engine) -> None:
             "UPDATE documentprocessing SET status = 'pending', "
             "processed_pages = 0, paddle_job_id = NULL, error_message = NULL"
         )
-        connection.exec_driver_sql(
-            "INSERT OR REPLACE INTO appmeta (key, value) VALUES ('schema_version', '1')"
-        )
+
+
+def _migrate_v2(connection) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS chatconversation ("
+        "id INTEGER PRIMARY KEY, document_id INTEGER NOT NULL, title TEXT NOT NULL, "
+        "profile TEXT NOT NULL, created_at TIMESTAMP, updated_at TIMESTAMP)"
+    )
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS chatconversationmessage ("
+        "id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, position INTEGER NOT NULL, "
+        "role TEXT NOT NULL, content TEXT NOT NULL, request_content TEXT, "
+        "input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER, "
+        "total_tokens INTEGER, created_at TIMESTAMP, "
+        "UNIQUE(conversation_id, position))"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_chatconversation_document_id "
+        "ON chatconversation (document_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_chatconversationmessage_conversation_id "
+        "ON chatconversationmessage (conversation_id)"
+    )
 
 
 def _add_column(connection, table: str, column: str, definition: str) -> None:

@@ -166,6 +166,58 @@ export interface ChatUsage {
   total_tokens: number
 }
 
+export interface SavedChatMessage extends ChatMessage {
+  request_content?: string | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+  cached_tokens?: number | null
+  total_tokens?: number | null
+}
+
+export interface ConversationSummary {
+  id: number
+  document_id: number
+  title: string
+  profile: string
+  message_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ConversationDetail extends ConversationSummary {
+  messages: SavedChatMessage[]
+}
+
+export function listConversations(documentId: number) {
+  return request<ConversationSummary[]>(`/documents/${documentId}/conversations`)
+}
+
+export function createConversation(documentId: number, profile: string, title: string) {
+  return request<ConversationSummary>(`/documents/${documentId}/conversations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile, title }),
+  })
+}
+
+export function getConversation(documentId: number, conversationId: number) {
+  return request<ConversationDetail>(`/documents/${documentId}/conversations/${conversationId}`)
+}
+
+export function saveConversation(
+  documentId: number,
+  conversationId: number,
+  profile: string,
+  title: string,
+  messages: SavedChatMessage[],
+) {
+  return request<ConversationSummary>(`/documents/${documentId}/conversations/${conversationId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile, title, messages }),
+  })
+}
+
 type ChatEvent =
   | { type: 'delta'; text: string }
   | { type: 'done' }

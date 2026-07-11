@@ -1,4 +1,6 @@
 from app.models.document import (
+    ChatConversation,
+    ChatConversationMessage,
     Document,
     DocumentPage,
     DocumentProcessing,
@@ -12,4 +14,6 @@ __all__ = [
     "DocumentProcessing",
     "DocumentPage",
     "ImageAsset",
+    "ChatConversation",
+    "ChatConversationMessage",
 ]

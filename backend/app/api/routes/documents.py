@@ -8,7 +8,15 @@ from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.db import get_session
-from app.models import Document, DocumentPage, DocumentProcessing, ImageAsset, Project
+from app.models import (
+    ChatConversation,
+    ChatConversationMessage,
+    Document,
+    DocumentPage,
+    DocumentProcessing,
+    ImageAsset,
+    Project,
+)
 from app.schemas.document import DocumentRead, DocumentUpdate
 from app.services.document_processing import document_processing_manager
 from app.services.page_content_store import page_content_store
@@ -151,6 +159,17 @@ def delete_document(
         select(ImageAsset).where(ImageAsset.document_id == document_id)
     ).all():
         session.delete(image)
+    for conversation in session.exec(
+        select(ChatConversation).where(ChatConversation.document_id == document_id)
+    ).all():
+        if conversation.id is not None:
+            for message in session.exec(
+                select(ChatConversationMessage).where(
+                    ChatConversationMessage.conversation_id == conversation.id
+                )
+            ).all():
+                session.delete(message)
+        session.delete(conversation)
     for page in session.exec(
         select(DocumentPage).where(DocumentPage.document_id == document_id)
     ).all():
