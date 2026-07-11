@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Plus, Send } from 'lucide-react'
+import { Plus, Send, Trash2 } from 'lucide-react'
 
 import Markdown from '@/components/study/Markdown'
 import {
   createConversation,
+  deleteConversation,
   getConversation,
   listConversations,
   listModels,
@@ -136,6 +137,19 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     await queryClient.invalidateQueries({ queryKey: ['conversations', doc.id] })
   }
 
+  async function removeCurrentConversation() {
+    if (conversationId === null || streaming) return
+    if (!window.confirm('确定删除当前对话吗？此操作不可恢复。')) return
+
+    try {
+      await deleteConversation(doc.id, conversationId)
+      startNewConversation()
+      await queryClient.invalidateQueries({ queryKey: ['conversations', doc.id] })
+    } catch (e) {
+      setError(`对话删除失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
   async function send() {
     const question = input.trim()
     if (!question || streaming || !selectedProfile || !docReady) return
@@ -238,6 +252,16 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
           className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
         >
           <Plus className="size-4" />
+        </button>
+        <button
+          type="button"
+          aria-label="删除当前对话"
+          title="删除当前对话"
+          disabled={streaming || conversationId === null}
+          onClick={() => void removeCurrentConversation()}
+          className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+        >
+          <Trash2 className="size-4" />
         </button>
         <span className="text-sm text-muted-foreground">模型</span>
         <select

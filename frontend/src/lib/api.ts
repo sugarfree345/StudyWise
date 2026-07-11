@@ -60,6 +60,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = await res.text()
     throw new Error(`请求失败 ${res.status}：${detail}`)
   }
+  if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
 }
 
@@ -215,6 +216,12 @@ export function saveConversation(
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ profile, title, messages }),
+  })
+}
+
+export function deleteConversation(documentId: number, conversationId: number) {
+  return request<void>(`/documents/${documentId}/conversations/${conversationId}`, {
+    method: 'DELETE',
   })
 }
 
