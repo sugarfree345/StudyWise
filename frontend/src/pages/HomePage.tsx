@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { FileText, FileUp } from 'lucide-react'
+import { FileText, FileUp, Trash2 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router'
 
 import {
   createProject,
+  deleteDocument,
   listProjectDocuments,
   listProjects,
   uploadProjectDocument,
@@ -69,6 +70,14 @@ export default function HomePage() {
       setNewProjectName('')
       setSelectedProjectId(project.id)
       void queryClient.invalidateQueries({ queryKey: ['projects'] })
+    },
+  })
+  const remove = useMutation({
+    mutationFn: (id: number) => deleteDocument(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ['projects', selectedProjectId, 'documents'],
+      })
     },
   })
 
@@ -144,27 +153,48 @@ export default function HomePage() {
           </p>
         )}
         {documents.map((doc) => (
-          <Link
+          <div
             key={doc.id}
-            to={`/study/${doc.id}`}
             className="flex items-center gap-3 rounded-lg border border-border p-4 transition-colors hover:bg-accent"
           >
-            <FileText className="size-5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate">{doc.filename}</span>
-              <span
-                className={
-                  doc.parse_status === 'failed'
-                    ? 'text-xs text-destructive'
-                    : 'text-xs text-muted-foreground'
-                }
-              >
-                {processingLabel(doc.parse_status, doc.processed_pages, doc.page_count)}
+            <Link
+              to={`/study/${doc.id}`}
+              className="flex min-w-0 flex-1 items-center gap-3"
+            >
+              <FileText className="size-5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{doc.filename}</span>
+                <span
+                  className={
+                    doc.parse_status === 'failed'
+                      ? 'text-xs text-destructive'
+                      : 'text-xs text-muted-foreground'
+                  }
+                >
+                  {processingLabel(doc.parse_status, doc.processed_pages, doc.page_count)}
+                </span>
               </span>
-            </span>
-            <span className="text-sm text-muted-foreground">{doc.page_count} 页</span>
-          </Link>
+              <span className="text-sm text-muted-foreground">{doc.page_count} 页</span>
+            </Link>
+            <button
+              type="button"
+              aria-label="删除"
+              title="删除该 PDF"
+              disabled={remove.isPending}
+              onClick={() => {
+                if (window.confirm(`确定删除《${doc.filename}》？此操作不可恢复。`)) {
+                  remove.mutate(doc.id)
+                }
+              }}
+              className="shrink-0 rounded p-2 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+            >
+              <Trash2 className="size-4" />
+            </button>
+          </div>
         ))}
+        {remove.isError && (
+          <p className="text-sm text-destructive">删除失败：{remove.error.message}</p>
+        )}
       </section>
     </main>
   )

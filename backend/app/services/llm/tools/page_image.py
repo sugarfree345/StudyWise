@@ -24,6 +24,31 @@ _PAGE_NUMBER = {
 }
 
 
+def _join_pages(pages: list[dict]) -> str:
+    """把多页 Markdown 拼成一段，每页前标注页码（Markdown 本身不含页码）。"""
+    return "\n\n".join(
+        f"## 第 {page['page_number']} 页\n\n{page['markdown']}".rstrip()
+        for page in pages
+    )
+
+
+@register(
+    name="get_full_pdf_text",
+    description=(
+        "获取整份 PDF 全部页拼接后的 Markdown 全文（每页前带页码标注）。"
+        "仅在你对这份文档【一无所知】、需要先建立对它整体内容与结构的了解时才调用："
+        "典型场景是对话刚开始、你的上下文还是空的，根本不知道这份文档讲什么，"
+        "先调它通读一遍。"
+        "如果你已经大致了解文档、只想看某一页或某几页，请改用 get_text，不要用本工具，"
+        "以免浪费上下文。"
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+def get_full_pdf_text(ctx: ToolContext, args: dict) -> ToolResult:
+    pages = content.get_document_markdown(ctx.session, ctx.document_id)
+    return ToolResult(text=_join_pages(pages))
+
+
 @register(
     name="get_text",
     description=(
@@ -46,11 +71,7 @@ def get_text(ctx: ToolContext, args: dict) -> ToolResult:
     pages = content.get_pages_markdown(
         ctx.session, ctx.document_id, first_page, last_page
     )
-    body = "\n\n".join(
-        f"## 第 {page['page_number']} 页\n\n{page['markdown']}".rstrip()
-        for page in pages
-    )
-    return ToolResult(text=body)
+    return ToolResult(text=_join_pages(pages))
 
 
 @register(
@@ -65,6 +86,7 @@ def get_text(ctx: ToolContext, args: dict) -> ToolResult:
         "required": ["page_number"],
     },
 )
+
 def get_page_content(ctx: ToolContext, args: dict) -> ToolResult:
     page_number = int(args["page_number"])
     page = content.get_page_content(ctx.session, ctx.document_id, page_number)

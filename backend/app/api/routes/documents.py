@@ -1,15 +1,17 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.db import get_session
-from app.models import Document, DocumentProcessing, Project
+from app.models import Document, DocumentPage, DocumentProcessing, ImageAsset, Project
 from app.schemas.document import DocumentRead, DocumentUpdate
 from app.services.document_processing import document_processing_manager
+from app.services.page_content_store import page_content_store
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -134,6 +136,35 @@ async def reparse_document(
     session.refresh(processing)
     await document_processing_manager.enqueue(document_id)
     return DocumentRead.from_models(document, processing)
+
+
+@router.delete("/{document_id}", status_code=204)
+def delete_document(
+    document_id: int, session: Session = Depends(get_session)
+) -> Response:
+    """删除文档：清掉数据库里的页/图/处理状态与文档记录，并删除源文件和解析产物。"""
+    document = session.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    for image in session.exec(
+        select(ImageAsset).where(ImageAsset.document_id == document_id)
+    ).all():
+        session.delete(image)
+    for page in session.exec(
+        select(DocumentPage).where(DocumentPage.document_id == document_id)
+    ).all():
+        session.delete(page)
+    processing = session.get(DocumentProcessing, document_id)
+    if processing is not None:
+        session.delete(processing)
+    session.delete(document)
+    session.commit()
+
+    # 删除磁盘上的源 PDF 与解析产物；文件缺失不视为错误。
+    Path(document.stored_path).unlink(missing_ok=True)
+    page_content_store.remove_document(document_id)
+    return Response(status_code=204)
 
 
 @router.get("/{document_id}/file")

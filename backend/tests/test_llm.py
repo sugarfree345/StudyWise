@@ -95,6 +95,58 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             {"role": "system", "content": "system text"},
         )
 
+    async def test_openai_sends_cache_controls_only_to_official_endpoint(self):
+        stream = async_values(
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="A", tool_calls=None))]
+            )
+        )
+        create = AsyncMock(return_value=stream)
+        provider = OpenAIProvider.__new__(OpenAIProvider)
+        provider._profile = ModelProfile.model_construct(
+            name="openai", style="openai", model_id="gpt-5.5", api_key="key",
+            base_url="https://api.openai.com/v1", max_tokens=123,
+        )
+        provider._client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+
+        _ = [
+            text async for text in provider.stream_chat(
+                system="s", messages=[{"role": "user", "content": "q"}],
+                prompt_cache_key="studywise:test",
+            )
+        ]
+
+        self.assertEqual(create.await_args.kwargs["prompt_cache_key"], "studywise:test")
+        self.assertEqual(create.await_args.kwargs["prompt_cache_retention"], "24h")
+
+    async def test_compatible_endpoint_does_not_receive_openai_cache_controls(self):
+        stream = async_values(
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="A", tool_calls=None))]
+            )
+        )
+        create = AsyncMock(return_value=stream)
+        provider = OpenAIProvider.__new__(OpenAIProvider)
+        provider._profile = ModelProfile.model_construct(
+            name="local", style="openai", model_id="gpt-5.5", api_key="key",
+            base_url="http://localhost:11434/v1", max_tokens=123,
+        )
+        provider._client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+
+        _ = [
+            text async for text in provider.stream_chat(
+                system="s", messages=[{"role": "user", "content": "q"}],
+                prompt_cache_key="studywise:test",
+            )
+        ]
+
+        self.assertNotIn("prompt_cache_key", create.await_args.kwargs)
+        self.assertNotIn("prompt_cache_retention", create.await_args.kwargs)
+
     async def test_anthropic_request_uses_top_level_system(self):
         stream = MagicMock()
         stream.__aenter__ = AsyncMock(return_value=stream)
@@ -131,8 +183,19 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
     """验证「模型→工具→模型」的多轮闭环：工具结果被回喂后，模型再产出最终文本。"""
 
     async def test_openai_runs_tool_then_finishes(self):
+        from app.services.llm.base import Usage
         from app.services.llm.tools import ToolResult, ToolSpec
 
+        # 每轮末尾带一个 usage chunk（choices 为空），provider 应累加两轮用量；
+        # prompt_tokens_details.cached_tokens 是缓存命中的子集，也应累加
+        usage_chunk = lambda p, c, cached=0: SimpleNamespace(  # noqa: E731
+            choices=[],
+            usage=SimpleNamespace(
+                prompt_tokens=p,
+                completion_tokens=c,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=cached),
+            ),
+        )
         # 第一轮：模型要求调用工具；第二轮：拿到结果后输出文本
         round1 = async_values(
             SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
@@ -144,11 +207,13 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 )],
             ))]),
+            usage_chunk(10, 5, cached=4),
         )
         round2 = async_values(
             SimpleNamespace(choices=[SimpleNamespace(
                 delta=SimpleNamespace(content="第2页讲的是X。", tool_calls=None)
             )]),
+            usage_chunk(20, 8, cached=6),
         )
         create = AsyncMock(side_effect=[round1, round2])
         provider = OpenAIProvider.__new__(OpenAIProvider)
@@ -164,6 +229,7 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
             return ToolResult.json({"markdown": "内容X"})
 
         spec = ToolSpec(name="get_page_content", description="d", parameters={})
+        usage = Usage()
         result = [
             text
             async for text in provider.stream_chat(
@@ -171,12 +237,19 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
                 messages=[{"role": "user", "content": "第2页讲什么"}],
                 tools=[spec],
                 tool_runner=runner,
+                usage=usage,
             )
         ]
 
         self.assertEqual(result, ["第2页讲的是X。"])
         self.assertEqual(seen, [("get_page_content", {"page_number": 2})])
         self.assertEqual(create.await_count, 2)
+        # 两轮 token 累加：input 10+20，output 5+8，cached 4+6
+        self.assertEqual((usage.input_tokens, usage.output_tokens), (30, 13))
+        self.assertEqual(usage.total_tokens, 43)
+        self.assertEqual(usage.cached_tokens, 10)
+        self.assertEqual(create.await_args_list[0].kwargs["stream_options"],
+                         {"include_usage": True})
         # 第二轮请求里应包含 assistant(tool_calls) 和 tool 结果两条消息
         second_messages = create.await_args_list[1].kwargs["messages"]
         roles = [m["role"] for m in second_messages]
@@ -185,15 +258,22 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_msg["tool_call_id"], "call_1")
 
     async def test_anthropic_runs_tool_then_finishes(self):
+        from app.services.llm.base import Usage
         from app.services.llm.tools import ToolResult, ToolSpec
 
-        def make_stream(texts, final_content):
+        def make_stream(texts, final_content, usage_tokens):
             stream = MagicMock()
             stream.__aenter__ = AsyncMock(return_value=stream)
             stream.__aexit__ = AsyncMock(return_value=None)
             stream.text_stream = async_values(*texts)
             stream.get_final_message = AsyncMock(
-                return_value=SimpleNamespace(content=final_content, stop_reason="end_turn")
+                return_value=SimpleNamespace(
+                    content=final_content,
+                    stop_reason="end_turn",
+                    usage=SimpleNamespace(
+                        input_tokens=usage_tokens[0], output_tokens=usage_tokens[1]
+                    ),
+                )
             )
             return stream
 
@@ -205,8 +285,8 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
             "type": "tool_use", "id": "tu_1", "name": "get_page_content",
             "input": {"page_number": 2},
         }
-        round1 = make_stream([], [tool_use])           # 只要求调用工具
-        round2 = make_stream(["第2页讲的是X。"], [])     # 拿到结果后输出文本
+        round1 = make_stream([], [tool_use], (100, 20))       # 只要求调用工具
+        round2 = make_stream(["第2页讲的是X。"], [], (150, 30))  # 拿到结果后输出文本
         create_stream = MagicMock(side_effect=[round1, round2])
         provider = AnthropicProvider.__new__(AnthropicProvider)
         provider._profile = profile("anthropic")
@@ -221,6 +301,7 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
             return ToolResult.json({"markdown": "内容X"})
 
         spec = ToolSpec(name="get_page_content", description="d", parameters={})
+        usage = Usage()
         result = [
             text
             async for text in provider.stream_chat(
@@ -228,12 +309,15 @@ class ToolLoopTests(unittest.IsolatedAsyncioTestCase):
                 messages=[{"role": "user", "content": "第2页讲什么"}],
                 tools=[spec],
                 tool_runner=runner,
+                usage=usage,
             )
         ]
 
         self.assertEqual(result, ["第2页讲的是X。"])
         self.assertEqual(seen, [("get_page_content", {"page_number": 2})])
         self.assertEqual(create_stream.call_count, 2)
+        # 两轮 token 累加：input 100+150，output 20+30
+        self.assertEqual((usage.input_tokens, usage.output_tokens), (250, 50))
         # 第二轮的 messages 末尾应是带 tool_result 的 user 消息
         second_messages = create_stream.call_args_list[1].kwargs["messages"]
         last = second_messages[-1]

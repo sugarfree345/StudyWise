@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     anthropic_api_key: str = ""
 
+    # 图片有用性启发式：未被 Markdown 引用且小于此字节数的图，判为装饰（校徽/图标）。
+    image_decoration_max_bytes: int = 10 * 1024
+
     # 5173 = Vite dev server，1420 = Tauri dev
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:1420"]
 

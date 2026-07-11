@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 
 from anthropic import AsyncAnthropic
 
-from app.services.llm.base import MAX_TOOL_ROUNDS, ChatMessage, ToolRunner
+from app.services.llm.base import MAX_TOOL_ROUNDS, ChatMessage, ToolRunner, Usage
 from app.services.llm.profiles import ModelProfile
 from app.services.llm.tools import ToolResult, ToolSpec, anthropic_tools
 
@@ -56,7 +56,11 @@ class AnthropicProvider:
         messages: list[ChatMessage],
         tools: list[ToolSpec] | None = None,
         tool_runner: ToolRunner | None = None,
+        usage: Usage | None = None,
+        prompt_cache_key: str | None = None,
     ) -> AsyncIterator[str]:
+        # Anthropic 的缓存配置与 OpenAI 不同；统一接口传入该值时在这里忽略。
+        del prompt_cache_key
         conversation: list[dict] = [dict(m) for m in messages]
         tool_defs = anthropic_tools(tools) if tools else None
 
@@ -74,6 +78,12 @@ class AnthropicProvider:
                 async for text in stream.text_stream:
                     yield text
                 final = await stream.get_final_message()
+
+            if usage is not None and final.usage is not None:
+                cached = getattr(final.usage, "cache_read_input_tokens", 0) or 0
+                usage.add(
+                    final.usage.input_tokens, final.usage.output_tokens, cached
+                )
 
             tool_uses = [block for block in final.content if block.type == "tool_use"]
             if not tool_uses or tool_runner is None:

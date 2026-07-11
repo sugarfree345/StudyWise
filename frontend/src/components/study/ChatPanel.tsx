@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Send } from 'lucide-react'
+import { Send, Trash2 } from 'lucide-react'
 
 import Markdown from '@/components/study/Markdown'
 import {
   listModels,
   streamChat,
   type ChatMessage,
+  type ChatUsage,
   type DocumentInfo,
 } from '@/lib/api'
 import { useSettingsStore } from '@/stores/useSettingsStore'
@@ -16,6 +17,16 @@ interface ChatPanelProps {
   doc: DocumentInfo
 }
 
+/**
+ * ``content`` 只用于界面展示；用户消息的 ``requestContent`` 会附上提问当时的
+ * 页码，并作为不可变历史发送给模型。这样下一轮请求严格以前一轮为前缀。
+ */
+type ChatEntry = ChatMessage & { requestContent?: string; usage?: ChatUsage }
+
+function withPageContext(question: string, page: number): string {
+  return `${question}\n\n（提问时当前第 ${page} 页；本问题中的「这一页/当前页」即指此页。）`
+}
+
 /** 针对当前页的对话面板：模型选择 + 流式回答 + Markdown 渲染。 */
 export default function ChatPanel({ doc }: ChatPanelProps) {
   const currentPage = useStudyStore((s) => s.currentPage)
@@ -23,7 +34,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
 
   const { data: models = [] } = useQuery({ queryKey: ['models'], queryFn: listModels })
 
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [messages, setMessages] = useState<ChatEntry[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -46,8 +57,20 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     const question = input.trim()
     if (!question || streaming || !selectedProfile || !docReady) return
 
-    const history: ChatMessage[] = [...messages, { role: 'user', content: question }]
-    setMessages([...history, { role: 'assistant', content: '' }])
+    // 每个问题在产生时就带上当前页，并永久保留在模型历史中。UI 仍只显示原问题。
+    const requestContent = withPageContext(question, currentPage)
+    const history: ChatMessage[] = [
+      ...messages.map(({ role, content, requestContent }) => ({
+        role,
+        content: requestContent ?? content,
+      })),
+      { role: 'user', content: requestContent },
+    ]
+    setMessages([
+      ...messages,
+      { role: 'user', content: question, requestContent },
+      { role: 'assistant', content: '' },
+    ])
     setInput('')
     setStreaming(true)
     setError(null)
@@ -58,8 +81,26 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
           setMessages((prev) => {
             const next = [...prev]
             next[next.length - 1] = {
+              ...next[next.length - 1],
               role: 'assistant',
               content: next[next.length - 1].content + ev.text,
+            }
+            return next
+          })
+        } else if (ev.type === 'usage') {
+          setMessages((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            if (last?.role === 'assistant') {
+              next[next.length - 1] = {
+                ...last,
+                usage: {
+                  input_tokens: ev.input_tokens,
+                  output_tokens: ev.output_tokens,
+                  cached_tokens: ev.cached_tokens,
+                  total_tokens: ev.total_tokens,
+                },
+              }
             }
             return next
           })
@@ -94,6 +135,19 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
             </option>
           ))}
         </select>
+        <button
+          type="button"
+          aria-label="清空会话"
+          title="清空当前会话"
+          disabled={streaming || messages.length === 0}
+          onClick={() => {
+            setMessages([])
+            setError(null)
+          }}
+          className="shrink-0 rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
+        >
+          <Trash2 className="size-4" />
+        </button>
       </div>
 
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
@@ -107,7 +161,9 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
         {messages.map((m, i) => (
           <div
             key={i}
-            className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}
+            className={
+              m.role === 'user' ? 'flex justify-end' : 'flex flex-col items-start'
+            }
           >
             <div
               className={
@@ -118,6 +174,16 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
             >
               {m.role === 'user' ? m.content : <Markdown>{m.content || '…'}</Markdown>}
             </div>
+            {m.role === 'assistant' && m.usage && (
+              <p className="mt-1 text-[11px] tabular-nums text-muted-foreground">
+                {m.usage.total_tokens.toLocaleString()} tokens（输入{' '}
+                {m.usage.input_tokens.toLocaleString()} · 输出{' '}
+                {m.usage.output_tokens.toLocaleString()}
+                {m.usage.cached_tokens > 0 &&
+                  ` · 缓存 ${m.usage.cached_tokens.toLocaleString()}`}
+                ）
+              </p>
+            )}
           </div>
         ))}
         {error && <p className="text-sm text-destructive">出错了：{error}</p>}

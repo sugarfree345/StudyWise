@@ -106,6 +106,14 @@ export function reparseDocument(id: number) {
   return request<DocumentInfo>(`/documents/${id}/reparse`, { method: 'POST' })
 }
 
+/** 删除文档（含源文件与解析产物）。后端返回 204，无响应体。 */
+export async function deleteDocument(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/documents/${id}`, { method: 'DELETE' })
+  if (!res.ok) {
+    throw new Error(`请求失败 ${res.status}：${await res.text()}`)
+  }
+}
+
 export function getPageText(documentId: number, pageNumber: number) {
   return request<PageText>(`/documents/${documentId}/pages/${pageNumber}/text`)
 }
@@ -151,10 +159,18 @@ export function listModels() {
   return request<ModelProfile[]>('/models')
 }
 
+export interface ChatUsage {
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  total_tokens: number
+}
+
 type ChatEvent =
   | { type: 'delta'; text: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
+  | ({ type: 'usage' } & ChatUsage)
 
 function parseSseEvent(chunk: string): ChatEvent | null {
   const line = chunk.split(/\r?\n/).find((item) => item.startsWith('data: '))

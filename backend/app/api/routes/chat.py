@@ -2,11 +2,13 @@
 
 设计要点：
 - 后端无状态，前端每次带全量对话历史（messages），简单起步，以后再落库。
-- 当前页的文字由后端注入成 system 提示，前端不用自己拼上下文。
+- 当前页随每条用户问题由前端一并写入历史；旧问题的页码永不改写，
+  让后续请求严格追加在先前提示之后，利于提示缓存。
 - 走 SSE 流式返回；provider 抛错时以 error 事件收尾，而不是中途 500。
 """
 
 import json
+from hashlib import sha256
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,6 +20,7 @@ from app.db import engine, get_session
 from app.models import Document, DocumentPage
 from app.schemas.chat import ChatRequest
 from app.services.llm import get_provider
+from app.services.llm.base import Usage
 from app.services.llm.profiles import PublicProfile, get_profile, load_profiles
 from app.services.llm.tools import ToolContext, run_tool, tool_specs
 from app.services.study_content_service import get_page_content
@@ -49,12 +52,12 @@ def _build_system(document: Document, page_number: int, session: Session) -> str
     )
 
 
-def _build_document_system(
-    document: Document, session: Session, current_page: int
-) -> str:
-    """轻量导航式 system 提示：不注入正文，只告诉模型「书是什么、用户看到第几页、
-    如何用工具自取内容」。正文由模型按需通过 get_text / get_image 等工具拉取，
-    避免每轮把整本文档塞进上下文。"""
+def _build_document_system(document: Document, session: Session) -> str:
+    """轻量导航式 system 提示，**保持完全静态**（不含当前页等易变信息），
+    以便作为稳定前缀命中 OpenAI 的提示缓存。每条用户问题都附有其提问时的
+    当前页，不进 system。
+
+    正文不注入，由模型按需通过 get_text / get_image 等工具拉取。"""
     if document.id is None:
         raise RuntimeError("文档尚未持久化")
     has_pages = session.exec(
@@ -65,18 +68,14 @@ def _build_document_system(
     if has_pages is None:
         raise HTTPException(status_code=409, detail="文档正在解析，请稍后再试")
 
+    # 工具清单不写进提示词：模型已从 API 的 tools 参数拿到完整 schema，这里只给行为约定。
     lines = [
         f"你是一个学习辅助助手，正在陪用户阅读《{document.filename}》，"
-        f"全书共 {document.page_count} 页，用户当前浏览到第 {current_page} 页。",
+        f"全书共 {document.page_count} 页。",
         "",
-        "你默认看不到页面内容，必须主动调用工具按需获取，不要凭空编造：",
-        "- get_text(first_page, last_page)：取页码区间的 Markdown 正文，最常用；"
-        "单页时首尾页填同一个数。",
-        "- get_page_content(page_number)：取某页正文 + 图片元数据（想知道有哪些图时用）。",
-        "- get_image(image_id) / get_page_render(page_number)：需要看图或整页版式时用。",
-        "- get_useful_images(page_number) / classify_image(...)：查看/标注图片。",
-        "",
-        f"用户说「这一页/当前页」时通常指第 {current_page} 页。回答前先用工具取到相关页内容；"
+        "你默认看不到页面内容，必须主动调用工具按需获取正文与图片，不要凭空编造。",
+        "每条用户问题末尾都有「（提问时当前第 N 页……）」标记，"
+        "其中「这一页/当前页」即指该条问题标记的页码。回答前先用工具取到相关页内容；"
         "跨页追问时保持整段对话连贯，必要时可以出小测验。",
     ]
     if document.table_of_contents.strip():
@@ -86,6 +85,12 @@ def _build_document_system(
     return "\n".join(lines)
 
 
+def _document_prompt_cache_key(document_id: int, model_id: str) -> str:
+    """为同一「文档 + 模型」生成稳定且不暴露原始 ID 的缓存路由键。"""
+    identity = f"studywise:document-prompt:v1:{document_id}:{model_id}"
+    return f"studywise:{sha256(identity.encode()).hexdigest()[:32]}"
+
+
 async def _sse(
     system: str,
     provider,
@@ -93,6 +98,7 @@ async def _sse(
     *,
     tool_document_id: int | None = None,
     tool_current_page: int | None = None,
+    prompt_cache_key: str | None = None,
 ) -> AsyncIterator[str]:
     """把 provider 的文本增量包成 SSE。
 
@@ -114,11 +120,31 @@ async def _sse(
         def tool_runner(name: str, arguments: dict):
             return run_tool(ctx, name, arguments)
 
+    usage = Usage()
     try:
         async for delta in provider.stream_chat(
-            system=system, messages=messages, tools=tools, tool_runner=tool_runner
+            system=system,
+            messages=messages,
+            tools=tools,
+            tool_runner=tool_runner,
+            usage=usage,
+            prompt_cache_key=prompt_cache_key,
         ):
             yield f"data: {json.dumps({'type': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
+        # 一次提问（可能含多轮工具调用）的累计 token 用量，供前端展示。
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "type": "usage",
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cached_tokens": usage.cached_tokens,
+                    "total_tokens": usage.total_tokens,
+                }
+            )
+            + "\n\n"
+        )
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
     except Exception as exc:  # noqa: BLE001 — 把上游错误变成流内 error 事件
         logger.exception("LLM 流式调用失败")
@@ -150,7 +176,12 @@ def chat(
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
     return StreamingResponse(
-        _sse(system, provider, messages),
+        _sse(
+            system,
+            provider,
+            messages,
+            prompt_cache_key=_document_prompt_cache_key(document_id, profile.model_id),
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -174,7 +205,7 @@ def chat_document(
 
     current_page = min(max(1, page), max(1, document.page_count))
     provider = get_provider(profile)
-    system = _build_document_system(document, session, current_page)
+    system = _build_document_system(document, session)  # 静态，利于缓存
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
     return StreamingResponse(
@@ -184,6 +215,7 @@ def chat_document(
             messages,
             tool_document_id=document_id,
             tool_current_page=current_page,
+            prompt_cache_key=_document_prompt_cache_key(document_id, profile.model_id),
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

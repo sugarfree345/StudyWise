@@ -10,10 +10,11 @@ OpenAI 兼容端点，只需换 base_url。
 
 import json
 from collections.abc import AsyncIterator
+from urllib.parse import urlparse
 
 from openai import AsyncOpenAI
 
-from app.services.llm.base import MAX_TOOL_ROUNDS, ChatMessage, ToolRunner
+from app.services.llm.base import MAX_TOOL_ROUNDS, ChatMessage, ToolRunner, Usage
 from app.services.llm.profiles import ModelProfile
 from app.services.llm.tools import ToolResult, ToolSpec, openai_tools
 
@@ -27,6 +28,16 @@ def _token_limit_kwarg(model_id: str, max_tokens: int) -> dict:
     if model_id.lower().startswith(_COMPLETION_TOKEN_PREFIXES):
         return {"max_completion_tokens": max_tokens}
     return {"max_tokens": max_tokens}
+
+
+def _is_official_openai_endpoint(base_url: str | None) -> bool:
+    """只对 OpenAI 官方端点发送其专有缓存参数。
+
+    DeepSeek、Ollama 等同样使用 Chat Completions 的请求外形，但未必接受
+    ``prompt_cache_key``，因此不能仅按 provider 风格判断。
+    """
+    endpoint = base_url or "https://api.openai.com/v1"
+    return urlparse(endpoint).hostname == "api.openai.com"
 
 
 def _image_followup(tool_call_id: str, result: ToolResult) -> dict | None:
@@ -58,6 +69,8 @@ class OpenAIProvider:
         messages: list[ChatMessage],
         tools: list[ToolSpec] | None = None,
         tool_runner: ToolRunner | None = None,
+        usage: Usage | None = None,
+        prompt_cache_key: str | None = None,
     ) -> AsyncIterator[str]:
         # OpenAI 风格：system 是消息数组里的第一条
         conversation: list[dict] = [{"role": "system", "content": system}, *messages]
@@ -72,11 +85,30 @@ class OpenAIProvider:
             }
             if tool_defs:
                 kwargs["tools"] = tool_defs
+            if usage is not None:
+                # 流式默认不返回用量，需显式开启；末尾会多一个带 usage 的 chunk。
+                kwargs["stream_options"] = {"include_usage": True}
+            # 同一个文档会话复用同一个稳定键，帮助 OpenAI 路由到持有相同
+            # 提示前缀缓存的机器。兼容端点不一定识别这些字段，故严格限于
+            # api.openai.com。gpt-5.5 只支持 24h 的扩展缓存保留策略。
+            if prompt_cache_key and _is_official_openai_endpoint(self._profile.base_url):
+                kwargs["prompt_cache_key"] = prompt_cache_key
+                if self._profile.model_id.lower().startswith("gpt-5.5"):
+                    kwargs["prompt_cache_retention"] = "24h"
             stream = await self._client.chat.completions.create(**kwargs)
 
             content_parts: list[str] = []
             calls: dict[int, dict] = {}
             async for chunk in stream:
+                chunk_usage = getattr(chunk, "usage", None)
+                if usage is not None and chunk_usage is not None:
+                    details = getattr(chunk_usage, "prompt_tokens_details", None)
+                    cached = getattr(details, "cached_tokens", 0) or 0
+                    usage.add(
+                        chunk_usage.prompt_tokens,
+                        chunk_usage.completion_tokens,
+                        cached,
+                    )
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta

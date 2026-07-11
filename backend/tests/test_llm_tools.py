@@ -78,6 +78,12 @@ class ToolLayerTests(unittest.TestCase):
         self.assertIn("正文内容", payload["markdown"])
         self.assertEqual(payload["images"][0]["id"], 1)
 
+    def test_get_full_pdf_text(self) -> None:
+        result = tools.run_tool(self.ctx, "get_full_pdf_text", {})
+        self.assertFalse(result.is_error)
+        self.assertIn("第 1 页", result.text)
+        self.assertIn("正文内容", result.text)
+
     def test_get_text_single_and_range(self) -> None:
         # 单页
         single = tools.run_tool(
@@ -159,9 +165,10 @@ class ToolLayerTests(unittest.TestCase):
         self.assertEqual(len(tools.anthropic_tools()), len(tools.tool_specs()))
         self.assertEqual(tools.openai_tools()[0]["type"], "function")
         self.assertIn("input_schema", tools.anthropic_tools()[0])
-        # 6 个页面/图片/文本工具应全部注册
-        self.assertEqual(len(tools.tool_specs()), 6)
+        # 7 个页面/图片/文本工具应全部注册
+        self.assertEqual(len(tools.tool_specs()), 7)
         self.assertIn("get_text", tools.registered_names())
+        self.assertIn("get_full_pdf_text", tools.registered_names())
 
 
 if __name__ == "__main__":

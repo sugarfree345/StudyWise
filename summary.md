@@ -87,9 +87,10 @@ Provider 无关，可扩展：`@register(name, description, parameters)` 装饰 
 - **`base.py`** — 注册表 + `ToolContext`(session/document_id/current_page) + `ToolResult`/`ToolImage` +
   `run_tool()`（未知工具/缺参数/参数错误/数据未找到分门别类转成 error 结果，让模型自我纠正而非中断）+
   `tool_specs()` / `openai_tools()` / `anthropic_tools()` 两种风格转换。
-- **`page_image.py`** — 6 个工具：
+- **`page_image.py`** — 7 个工具：
   | 工具 | 作用 |
   |---|---|
+  | `get_full_pdf_text()` | 取整份 PDF 全文（每页带页码）；仅在对文档一无所知、需先建立整体了解时用（如首轮空上下文） |
   | `get_text(first_page, last_page)` | 取页码区间 Markdown（**最常用**取文工具，单页首尾填同值） |
   | `get_page_content(page_number)` | 某页 Markdown + 图片元数据 |
   | `get_image(image_id)` | 取原图；已判定装饰性(is_useful=false)则只回简介 |
@@ -102,11 +103,13 @@ Provider 无关，可扩展：`@register(name, description, parameters)` 装饰 
 - `GET /models` — 列出可用模型档案（不含 key）。
 - `POST /documents/{id}/pages/{n}/chat` — 旧的**单页**对话（把该页 Markdown 注入 system，无工具）。
 - `POST /documents/{id}/chat?page=N` — **当前主用**的整册共享对话：
-  - **轻量导航式 system**：`_build_document_system` **不再注入全文**，只给「书名 / 总页数 / 当前第 N 页 /
-    工具清单 / 目录或摘要」（约数百字）。正文完全由模型按需用 `get_text`/`get_image` 等工具自取，
+  - **轻量导航式 system**：`_build_document_system` **不再注入全文、也不列工具清单**（工具的 schema 走
+    API 的 `tools` 参数），只给「书名 / 总页数 / 当前第 N 页 / 行为约定 / 目录或摘要」（约数百字）。
+    正文完全由模型按需用 `get_full_pdf_text`/`get_text`/`get_image` 等工具自取，
     大幅省 token，也让对话不必每轮携带整册内容。
   - **无状态**：前端每次带全量对话历史 `messages`。
-  - 走 **SSE** 流式返回 `delta`/`done`/`error` 事件；provider 出错以流内 error 事件收尾，不中途 500。
+  - 走 **SSE** 流式返回 `delta`/`usage`/`done`/`error` 事件（`usage` 携带本次提问累计 token，
+    多轮工具调用会累加）；provider 出错以流内 error 事件收尾，不中途 500。
   - `_sse` 在流式期间**单独开一个 `Session(engine)`** 供工具执行读写，
     因为请求级 Depends 会话在响应体流式输出阶段不保证仍可用。
 

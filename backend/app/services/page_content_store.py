@@ -24,6 +24,12 @@ class PageContentStore:
         (directory / "images").mkdir()
         (directory / "renders").mkdir()
 
+    def remove_document(self, document_id: int) -> None:
+        """彻底删除某文档的全部解析产物（页面、图片、渲染图）。"""
+        directory = self.document_dir(document_id)
+        if directory.exists():
+            shutil.rmtree(directory)
+
     def write_page(self, document_id: int, page: StoredPage) -> None:
         directory = self.document_dir(document_id)
         pages_dir = directory / "pages"

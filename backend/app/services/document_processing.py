@@ -24,6 +24,7 @@ from app.services.document_parser import (
 )
 from app.services.paddleocr_service import PaddleOCRDocumentParser
 from app.services.page_content_store import PageContentStore, page_content_store
+from app.services.study_content_service import useful_by_heuristic
 
 
 def _now() -> datetime:
@@ -278,6 +279,12 @@ class DocumentProcessingManager:
                         self._store.image_path(document_id, image.filename)
                     )
                     image_model.mime_type = image.mime_type
+                    # 解析时打有用性基线：正文引用的图 / 较大的图判为有用，
+                    # 未引用的小图（校徽、图标）判为装饰。
+                    referenced = image.filename in stored_page.markdown
+                    image_model.is_useful = useful_by_heuristic(
+                        referenced, len(image.data)
+                    )
                     image_model.updated_at = _now()
                     session.add(image_model)
                 session.commit()

@@ -5,7 +5,50 @@ from pathlib import Path
 
 from sqlmodel import Session, select
 
+from app.core.config import settings
 from app.models import Document, DocumentPage, ImageAsset, Project
+
+
+def useful_by_heuristic(referenced_in_markdown: bool, size_bytes: int) -> bool:
+    """解析时给图片打有用性基线（免费、确定性）：
+
+    - 被 Markdown 正文引用 → 有用（OCR 把它放进了阅读流，高置信是内容）；
+    - 未引用但较大（>= 阈值）→ 也判为有用（多为内容图，宁可多留不可错杀）；
+    - 未引用且很小（< 阈值）→ 装饰（校徽/图标）。
+
+    大模型之后仍可用 classify_image 修正个别误判并补写 summary。
+    """
+    return referenced_in_markdown or size_bytes >= settings.image_decoration_max_bytes
+
+
+def reclassify_document_images(session: Session, document_id: int) -> int:
+    """按启发式回填某文档所有图片的 is_useful，返回被改动的条数。
+
+    用于给历史文档补标，无需重新 OCR。判定用页面 Markdown 是否引用该图片 +
+    图片文件大小。
+    """
+    markdown_by_page = {
+        page.page_number: page.markdown
+        for page in session.exec(
+            select(DocumentPage).where(DocumentPage.document_id == document_id)
+        ).all()
+    }
+    changed = 0
+    for image in session.exec(
+        select(ImageAsset).where(ImageAsset.document_id == document_id)
+    ).all():
+        markdown = markdown_by_page.get(image.page_number, "")
+        referenced = bool(image.filename) and image.filename in markdown
+        path = Path(image.stored_path)
+        size = path.stat().st_size if image.stored_path and path.exists() else 0
+        new_value = useful_by_heuristic(referenced, size)
+        if image.is_useful != new_value:
+            image.is_useful = new_value
+            image.updated_at = datetime.now(timezone.utc)
+            session.add(image)
+            changed += 1
+    session.commit()
+    return changed
 
 
 def get_project_content(session: Session, project_id: int) -> dict:
@@ -172,6 +215,20 @@ def get_image_meta(session: Session, image_id: int) -> dict:
     if image is None:
         raise LookupError("图片不存在")
     return _image_meta(image)
+
+
+def get_document_markdown(session: Session, document_id: int) -> list[dict]:
+    """取整份文档所有已解析页的 Markdown（按页码升序）。无任何已解析页时抛 LookupError。"""
+    pages = session.exec(
+        select(DocumentPage)
+        .where(DocumentPage.document_id == document_id)
+        .order_by(DocumentPage.page_number)
+    ).all()
+    if not pages:
+        raise LookupError("文档还没有已解析内容")
+    return [
+        {"page_number": page.page_number, "markdown": page.markdown} for page in pages
+    ]
 
 
 def get_pages_markdown(

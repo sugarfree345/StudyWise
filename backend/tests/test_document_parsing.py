@@ -240,7 +240,61 @@ class DocumentProcessingTests(unittest.TestCase):
             self.assertEqual(page.markdown, "# 第一页\n\n![图](../images/d000001_p0001_img001.png)")
             self.assertEqual(image.page_id, page.id)
             self.assertTrue(Path(image.stored_path).exists())
+            # 该图被 Markdown 引用，解析时应打成有用
+            self.assertTrue(image.is_useful)
             test_engine.dispose()
+
+
+class ImageUsefulnessHeuristicTests(unittest.TestCase):
+    def test_pure_rule(self):
+        from app.services.study_content_service import useful_by_heuristic
+
+        self.assertTrue(useful_by_heuristic(True, 1))          # 引用 → 有用（不看大小）
+        self.assertTrue(useful_by_heuristic(False, 20 * 1024))  # 未引用大图 → 有用
+        self.assertTrue(useful_by_heuristic(False, 10 * 1024))  # 边界（等于阈值）→ 有用
+        self.assertFalse(useful_by_heuristic(False, 3 * 1024))  # 未引用小图 → 装饰
+
+    def test_reclassify_backfill(self):
+        from app.models import Document, DocumentPage, ImageAsset, Project
+        from app.services.study_content_service import reclassify_document_images
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = create_engine(
+                f"sqlite:///{root / 'test.db'}",
+                connect_args={"check_same_thread": False},
+            )
+            SQLModel.metadata.create_all(engine)
+
+            # 三张图：A 被引用(小)、B 未引用(大)、C 未引用(小)
+            specs = [
+                ("a.png", 3 * 1024, True),    # 引用 → True
+                ("b.png", 20 * 1024, False),  # 未引用大 → True
+                ("c.png", 3 * 1024, False),   # 未引用小 → False
+            ]
+            for name, size, _ in specs:
+                (root / name).write_bytes(b"x" * size)
+
+            with Session(engine) as s:
+                s.add(Project(id=1, name="p"))
+                s.add(Document(id=1, project_id=1, filename="d.pdf",
+                               stored_path="d.pdf", page_count=1))
+                s.add(DocumentPage(id=1, document_id=1, page_number=1,
+                                   markdown="正文 ![](../images/a.png)"))
+                for idx, (name, _, _) in enumerate(specs, start=1):
+                    s.add(ImageAsset(document_id=1, page_id=1, page_number=1,
+                                     image_index=idx, filename=name,
+                                     stored_path=str(root / name)))
+                s.commit()
+
+                changed = reclassify_document_images(s, 1)
+                self.assertEqual(changed, 3)
+                by_name = {
+                    i.filename: i.is_useful
+                    for i in s.exec(select(ImageAsset)).all()
+                }
+            self.assertEqual(by_name, {"a.png": True, "b.png": True, "c.png": False})
+            engine.dispose()
 
 
 if __name__ == "__main__":
