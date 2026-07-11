@@ -82,6 +82,8 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  // 仅在用户仍停留在底部附近时跟随流式输出；手动上滑后不再抢回滚动位置。
+  const followLatestRef = useRef(true)
   const docReady = doc.parse_status === 'ready'
 
   useEffect(() => {
@@ -92,11 +94,23 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
   }, [models, selectedProfile, setSelectedProfile])
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+    const container = scrollRef.current
+    if (container && followLatestRef.current) {
+      container.scrollTop = container.scrollHeight
+    }
   }, [messages])
+
+  function updateFollowLatest() {
+    const container = scrollRef.current
+    if (!container) return
+    // 留一点容差，避免子像素布局使用户已经在底部却被误判。
+    followLatestRef.current =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 48
+  }
 
   function startNewConversation() {
     if (streaming) return
+    followLatestRef.current = true
     setConversationId(null)
     setMessages([])
     setError(null)
@@ -107,6 +121,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     if (streaming) return
     try {
       const conversation = await getConversation(doc.id, id)
+      followLatestRef.current = true
       setConversationId(conversation.id)
       setMessages(conversation.messages.map(fromSavedMessage))
       setSelectedProfile(conversation.profile)
@@ -125,6 +140,8 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     const question = input.trim()
     if (!question || streaming || !selectedProfile || !docReady) return
 
+    // 发送新问题是用户主动要求查看最新内容，恢复自动跟随。
+    followLatestRef.current = true
     const requestContent = withPageContext(question, currentPage)
     const userEntry: ChatEntry = { role: 'user', content: question, requestContent }
     const history: ChatMessage[] = [
@@ -238,7 +255,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
         </select>
       </div>
 
-      <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-4">
+      <div ref={scrollRef} onScroll={updateFollowLatest} className="flex-1 space-y-4 overflow-y-auto p-4">
         {messages.length === 0 && (
           <p className="text-sm text-muted-foreground">
             {docReady ? '选择已有对话，或开始一段新对话。' : '文档正在进行 OCR 解析，完成后即可提问。'}
