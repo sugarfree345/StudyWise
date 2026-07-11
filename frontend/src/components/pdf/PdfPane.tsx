@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
+import './PdfPane.css'
 
 import { documentFileUrl, type DocumentInfo } from '@/lib/api'
 import { useStudyStore } from '@/stores/useStudyStore'

@@ -1,0 +1,14 @@
+/*
+ * 部分第三方 PDF 写入的高亮批注会携带 overlaidText。它供 PDF.js 的
+ * 无障碍/复制语义使用，不能作为可见文字叠加在页面画布上。
+ * react-pdf 当前随包提供的 AnnotationLayer.css 尚未包含 PDF.js 的这条规则。
+ */
+.annotationLayer section .overlaidText {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: inline-block;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
