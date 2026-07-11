@@ -1,5 +1,69 @@
 [
   {
+    "name": "openai-gpt-5.5",
+    "style": "openai",
+    "credential": "openai",
+    "model_id": "gpt-5.5",
+    "base_url": "https://api.openai.com/v1",
+    "max_tokens": 8192
+  },
+  {
+    "name": "openai-gpt-5.4",
+    "style": "openai",
+    "credential": "openai",
+    "model_id": "gpt-5.4",
+    "base_url": "https://api.openai.com/v1",
+    "max_tokens": 8192
+  },
+  {
+    "name": "openai-gpt-5.4-mini",
+    "style": "openai",
+    "credential": "openai",
+    "model_id": "gpt-5.4-mini",
+    "base_url": "https://api.openai.com/v1",
+    "max_tokens": 4096
+  },
+  {
+    "name": "openai-gpt-5.4-nano",
+    "style": "openai",
+    "credential": "openai",
+    "model_id": "gpt-5.4-nano",
+    "base_url": "https://api.openai.com/v1",
+    "max_tokens": 4096
+  },
+  {
+    "name": "openai-gpt-5",
+    "style": "openai",
+    "credential": "openai",
+    "model_id": "gpt-5",
+    "base_url": "https://api.openai.com/v1",
+    "max_tokens": 8192
+  },
+  {
+    "name": "openai-gpt-5-mini",
+    "style": "openai",
+    "credential": "openai",
+    "model_id": "gpt-5-mini",
+    "base_url": "https://api.openai.com/v1",
+    "max_tokens": 4096
+  },
+  {
+    "name": "openai-gpt-5-nano",
+    "style": "openai",
+    "credential": "openai",
+    "model_id": "gpt-5-nano",
+    "base_url": "https://api.openai.com/v1",
+    "max_tokens": 4096
+  },
+  {
+    "name": "openai-gpt-4.1",
+    "style": "openai",
+    "credential": "openai",
+    "model_id": "gpt-4.1",
+    "base_url": "https://api.openai.com/v1",
+    "max_tokens": 4096
+  },
+  {
     "name": "openai-gpt-4.1-mini",
     "style": "openai",
     "credential": "openai",
@@ -8,12 +72,36 @@
     "max_tokens": 2048
   },
   {
-    "name": "deepseek-chat",
+    "name": "deepseek-v4-flash",
+    "style": "openai",
+    "credential": "deepseek",
+    "model_id": "deepseek-v4-flash",
+    "base_url": "https://api.deepseek.com/v1",
+    "max_tokens": 8192
+  },
+  {
+    "name": "deepseek-v4-pro",
+    "style": "openai",
+    "credential": "deepseek",
+    "model_id": "deepseek-v4-pro",
+    "base_url": "https://api.deepseek.com/v1",
+    "max_tokens": 8192
+  },
+  {
+    "name": "deepseek-chat（将停用）",
     "style": "openai",
     "credential": "deepseek",
     "model_id": "deepseek-chat",
     "base_url": "https://api.deepseek.com/v1",
-    "max_tokens": 2048
+    "max_tokens": 4096
+  },
+  {
+    "name": "deepseek-reasoner（将停用）",
+    "style": "openai",
+    "credential": "deepseek",
+    "model_id": "deepseek-reasoner",
+    "base_url": "https://api.deepseek.com/v1",
+    "max_tokens": 8192
   },
   {
     "name": "本地-qwen",
