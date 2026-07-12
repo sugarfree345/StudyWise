@@ -39,6 +39,8 @@ class ToolResult:
     text: str | None = None
     image: ToolImage | None = None
     is_error: bool = False
+    # 工具实际返回正文的页码。会话层据此更新最近页面队列，不能根据调用参数猜测。
+    page_numbers: list[int] = field(default_factory=list)
 
     @classmethod
     def json(cls, payload: object) -> "ToolResult":

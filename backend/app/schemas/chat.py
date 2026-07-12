@@ -11,3 +11,4 @@ class ChatMessageIn(BaseModel):
 class ChatRequest(BaseModel):
     profile: str                       # 用哪个模型档案（ModelProfile.name）
     messages: list[ChatMessageIn]      # 对话历史（后端无状态，前端每次带全量）
+    conversation_id: int | None = None  # 用于读取该会话的短期页面工作集

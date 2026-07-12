@@ -38,6 +38,20 @@ def migrate_schema(engine: Engine) -> None:
             connection.exec_driver_sql(
                 "INSERT OR REPLACE INTO appmeta (key, value) VALUES ('schema_version', '3')"
             )
+            version = 3
+
+        if version < 4:
+            _migrate_v4(connection)
+            connection.exec_driver_sql(
+                "INSERT OR REPLACE INTO appmeta (key, value) VALUES ('schema_version', '4')"
+            )
+            version = 4
+
+        if version < 5:
+            _migrate_v5(connection)
+            connection.exec_driver_sql(
+                "INSERT OR REPLACE INTO appmeta (key, value) VALUES ('schema_version', '5')"
+            )
 
 
 def _migrate_v1(connection) -> None:
@@ -130,6 +144,48 @@ def _migrate_v3(connection) -> None:
     """保存可展开的 Agent 活动轨迹与单轮耗时，供恢复对话后继续查看。"""
     _add_column(connection, "chatconversationmessage", "activity_trace", "JSON")
     _add_column(connection, "chatconversationmessage", "duration_ms", "INTEGER")
+
+
+def _migrate_v4(connection) -> None:
+    """为会话的短期页面工作集建立索引，正文仍从 DocumentPage 读取。"""
+    connection.exec_driver_sql(
+        "CREATE TABLE IF NOT EXISTS chatconversationpagecontext ("
+        "id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, "
+        "page_number INTEGER NOT NULL, last_turn INTEGER NOT NULL, "
+        "queue_position INTEGER NOT NULL DEFAULT 0, updated_at TIMESTAMP, "
+        "UNIQUE(conversation_id, page_number))"
+    )
+
+
+def _migrate_v5(connection) -> None:
+    """把页面工作集改成有稳定顺序的最多 8 页 FIFO 队列。"""
+    _add_column(
+        connection,
+        "chatconversationpagecontext",
+        "queue_position",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    # 旧 v4 可能按“最近两轮”留下很多页；升级时每个会话只保留最新 8 条。
+    connection.exec_driver_sql(
+        "DELETE FROM chatconversationpagecontext WHERE id IN ("
+        "SELECT id FROM ("
+        "SELECT id, ROW_NUMBER() OVER (PARTITION BY conversation_id "
+        "ORDER BY last_turn DESC, id DESC) AS recent_rank "
+        "FROM chatconversationpagecontext"
+        ") WHERE recent_rank > 8)"
+    )
+    connection.exec_driver_sql(
+        "WITH ranked AS ("
+        "SELECT id, ROW_NUMBER() OVER (PARTITION BY conversation_id "
+        "ORDER BY last_turn, id) - 1 AS position "
+        "FROM chatconversationpagecontext"
+        ") UPDATE chatconversationpagecontext SET queue_position = "
+        "(SELECT position FROM ranked WHERE ranked.id = chatconversationpagecontext.id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_chatconversationpagecontext_conversation_id "
+        "ON chatconversationpagecontext (conversation_id)"
+    )
 
 
 def _add_column(connection, table: str, column: str, definition: str) -> None:

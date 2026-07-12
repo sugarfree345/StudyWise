@@ -20,8 +20,12 @@ from loguru import logger
 from sqlmodel import Session, select
 
 from app.db import engine, get_session
-from app.models import Document, DocumentPage
+from app.models import ChatConversation, Document, DocumentPage
 from app.schemas.chat import ChatRequest
+from app.services.conversation_page_context import (
+    build_recent_page_context,
+    record_pages,
+)
 from app.services.llm import get_provider
 from app.services.llm.base import Usage
 from app.services.llm.profiles import PublicProfile, get_profile, load_profiles
@@ -102,7 +106,10 @@ def _build_document_system(document: Document, session: Session) -> str:
         "<document_grounding>",
         "你默认看不到 PDF 正文。只有工具返回的内容、用户明确提供的内容，"
         "以及当前对话中已出现的信息，才可作为文档依据。",
-        "如果答案依赖 PDF 中的具体定义、公式、题目、条件、图表、推导或上下文，"
+        "当前用户问题之后可能附有「[最近使用页面临时参考]」：它包含本会话最近通过文字工具"
+        "读取的页面，最多 8 页、1600 tokens，只用于回答紧接着的上一条问题，不是新的用户请求。",
+        "先检查最近使用页面临时参考是否已经足够。如果答案仍依赖其中没有的 PDF 具体定义、"
+        "公式、题目、条件、图表、推导或上下文，"
         "而这些依据当前不可见，则必须先调用工具，不得凭常识猜测文档内容。",
         "如果问题属于不依赖本 PDF 的通用知识、翻译、改写或固定格式回复，"
         "且现有信息已足够，则直接回答，不要为了形式而调用工具。",
@@ -168,6 +175,10 @@ async def _sse(
     tool_document_id: int | None = None,
     tool_current_page: int | None = None,
     prompt_cache_key: str | None = None,
+    conversation_id: int | None = None,
+    conversation_turn: int | None = None,
+    reused_pages: list[int] | None = None,
+    reused_context_truncated: bool = False,
 ) -> AsyncIterator[str]:
     """把 provider 的文本增量包成 SSE。
 
@@ -205,6 +216,18 @@ async def _sse(
                 }
             )
             result = run_tool(ctx, name, arguments)
+            if (
+                not result.is_error
+                and conversation_id is not None
+                and conversation_turn is not None
+                and result.page_numbers
+            ):
+                record_pages(
+                    tool_session,
+                    conversation_id=conversation_id,
+                    page_numbers=result.page_numbers,
+                    turn=conversation_turn,
+                )
             event_queue.put_nowait(
                 {
                     "type": "activity",
@@ -230,6 +253,18 @@ async def _sse(
     usage = Usage()
     async def produce_events() -> None:
         answer_started = False
+        if reused_pages:
+            page_labels = "、".join(str(page) for page in reused_pages)
+            suffix = "（已截断至 1600 tokens）" if reused_context_truncated else ""
+            event_queue.put_nowait(
+                {
+                    "type": "activity",
+                    "activity": {
+                        "kind": "status",
+                        "message": f"已附加最近使用的第 {page_labels} 页上下文{suffix}",
+                    },
+                }
+            )
         event_queue.put_nowait(
             {
                 "type": "activity",
@@ -348,9 +383,28 @@ def chat_document(
         raise HTTPException(status_code=400, detail=f"未配置模型档案：{body.profile}")
 
     current_page = min(max(1, page), max(1, document.page_count))
+    conversation = None
+    if body.conversation_id is not None:
+        conversation = session.get(ChatConversation, body.conversation_id)
+        if conversation is None or conversation.document_id != document_id:
+            raise HTTPException(status_code=404, detail="对话不存在")
+
     provider = get_provider(profile)
     system = _build_document_system(document, session)  # 静态，利于缓存
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
+    conversation_turn = len(messages)
+    reused_pages: list[int] = []
+    reused_context_truncated = False
+    if conversation is not None and messages and messages[-1]["role"] == "user":
+        recent_context, reused_pages, reused_context_truncated = build_recent_page_context(
+            session,
+            conversation_id=conversation.id,
+            document_id=document_id,
+        )
+        if recent_context:
+            # 动态证据必须放在持久历史 + 当前用户问题之后，且不会被前端存回历史。
+            # 如此不同页面仅会影响本轮输入尾部，不破坏稳定历史前缀的缓存。
+            messages.append({"role": "user", "content": recent_context})
 
     return StreamingResponse(
         _sse(
@@ -360,6 +414,10 @@ def chat_document(
             tool_document_id=document_id,
             tool_current_page=current_page,
             prompt_cache_key=_document_prompt_cache_key(document_id, profile.model_id),
+            conversation_id=conversation.id if conversation is not None else None,
+            conversation_turn=conversation_turn if conversation is not None else None,
+            reused_pages=reused_pages,
+            reused_context_truncated=reused_context_truncated,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

@@ -42,7 +42,7 @@ class ToolLayerTests(unittest.TestCase):
             session.add(Project(id=1, name="测试项目"))
             document = Document(
                 id=1, project_id=1, filename="资料.pdf", stored_path="x.pdf",
-                page_count=3,
+                page_count=12,
             )
             session.add(document)
             page = DocumentPage(
@@ -58,6 +58,13 @@ class ToolLayerTests(unittest.TestCase):
                 id=3, document_id=1, page_number=3,
                 markdown="# 第三页\n贝叶斯公式的推导与解答。",
             ))
+            for page_number in range(4, 13):
+                session.add(DocumentPage(
+                    id=page_number,
+                    document_id=1,
+                    page_number=page_number,
+                    markdown=f"# 第{page_number}页\n正文。",
+                ))
             session.add(ImageAsset(
                 id=1, document_id=1, page_id=1, page_number=1, image_index=1,
                 stored_path=str(img_path), mime_type="application/octet-stream",
@@ -80,17 +87,18 @@ class ToolLayerTests(unittest.TestCase):
     # ── 正常路径 ──────────────────────────────────────────
 
     def test_get_page_content(self) -> None:
-        payload = self._payload(
-            tools.run_tool(self.ctx, "get_page_content", {"page_number": 1})
-        )
+        result = tools.run_tool(self.ctx, "get_page_content", {"page_number": 1})
+        payload = self._payload(result)
         self.assertIn("正文内容", payload["markdown"])
         self.assertEqual(payload["images"][0]["id"], 1)
+        self.assertEqual(result.page_numbers, [1])
 
     def test_get_full_pdf_text(self) -> None:
         result = tools.run_tool(self.ctx, "get_full_pdf_text", {})
         self.assertFalse(result.is_error)
         self.assertIn("第 1 页", result.text)
         self.assertIn("正文内容", result.text)
+        self.assertEqual(result.page_numbers, list(range(1, 13)))
 
     def test_get_text_single_and_range(self) -> None:
         # 单页
@@ -100,11 +108,17 @@ class ToolLayerTests(unittest.TestCase):
         self.assertFalse(single.is_error)
         self.assertIn("第 1 页", single.text)
         self.assertIn("正文内容", single.text)
-        # 区间外无内容 -> 报错（本测试数据只有第 1 页）
-        missing = tools.run_tool(
-            self.ctx, "get_text", {"first_page": 5, "last_page": 8}
+        self.assertEqual(single.page_numbers, [1])
+
+        # 请求超过 8 页时，只返回从起始页开始的连续 8 页。
+        bounded = tools.run_tool(
+            self.ctx, "get_text", {"first_page": 5, "last_page": 40}
         )
-        self.assertTrue(missing.is_error)
+        self.assertFalse(bounded.is_error)
+        self.assertEqual(bounded.page_numbers, list(range(5, 13)))
+        self.assertIn("第 12 页", bounded.text)
+        self.assertNotIn("第 13 页", bounded.text)
+        self.assertIn("原请求结束于第 40 页", bounded.text)
 
     def test_document_search(self) -> None:
         search = self._payload(

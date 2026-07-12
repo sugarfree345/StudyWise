@@ -84,6 +84,23 @@ class ChatConversationMessage(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ChatConversationPageContext(SQLModel, table=True):
+    """会话最近通过文字工具读取的页面 FIFO 队列；正文不在此复制。"""
+
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id", "page_number", name="uq_chat_page_context"
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    conversation_id: int = Field(foreign_key="chatconversation.id", index=True)
+    page_number: int = Field(index=True)
+    last_turn: int
+    queue_position: int = 0
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class DocumentPage(SQLModel, table=True):
     """PaddleOCR 返回的一页结构化内容。"""
 

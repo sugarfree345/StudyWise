@@ -23,6 +23,8 @@ _PAGE_NUMBER = {
     "minimum": 1,
 }
 
+_MAX_TEXT_PAGES = 8
+
 
 def _join_pages(pages: list[dict]) -> str:
     """把多页 Markdown 拼成一段，每页前标注页码（Markdown 本身不含页码）。"""
@@ -45,7 +47,10 @@ def _join_pages(pages: list[dict]) -> str:
 )
 def get_full_pdf_text(ctx: ToolContext, args: dict) -> ToolResult:
     pages = content.get_document_markdown(ctx.session, ctx.document_id)
-    return ToolResult(text=_join_pages(pages))
+    return ToolResult(
+        text=_join_pages(pages),
+        page_numbers=[page["page_number"] for page in pages],
+    )
 
 
 @register(
@@ -55,6 +60,7 @@ def get_full_pdf_text(ctx: ToolContext, args: dict) -> ToolResult:
         "当问题依赖已知页面的文字、公式、题目、条件或推导，"
         "或 search_document 已经找到候选页时使用。"
         "已知准确页码时先读最小范围；单页时 first_page 与 last_page 相同。"
+        "一次最多返回从起始页开始的连续 8 页；即使 last_page 更大，也会在第 8 页处截断。"
         "获得结果后，如果页面是解答/证明/推导/续页，出现「由上式/根据前文」，"
         "或缺少题目、定义、符号、条件、图表，必须继续读取最少必要的相关页，"
         "通常先扩展相邻 1–2 页。当问题、必要前提和结论已齐全时停止，不要无限扩大范围。"
@@ -71,10 +77,23 @@ def get_full_pdf_text(ctx: ToolContext, args: dict) -> ToolResult:
 def get_text(ctx: ToolContext, args: dict) -> ToolResult:
     first_page = int(args["first_page"])
     last_page = int(args["last_page"])
+    if last_page < first_page:
+        first_page, last_page = last_page, first_page
+    requested_last_page = last_page
+    last_page = min(requested_last_page, first_page + _MAX_TEXT_PAGES - 1)
     pages = content.get_pages_markdown(
         ctx.session, ctx.document_id, first_page, last_page
     )
-    return ToolResult(text=_join_pages(pages))
+    text = _join_pages(pages)
+    if requested_last_page > last_page:
+        text += (
+            f"\n\n[单次最多读取 {_MAX_TEXT_PAGES} 页：原请求结束于第 {requested_last_page} 页，"
+            f"本次只返回第 {first_page}–{last_page} 页。如仍需要后续内容，请再次调用 get_text。]"
+        )
+    return ToolResult(
+        text=text,
+        page_numbers=[page["page_number"] for page in pages],
+    )
 
 
 @register(
@@ -123,9 +142,11 @@ def get_page_content(ctx: ToolContext, args: dict) -> ToolResult:
     page_number = int(args["page_number"])
     page = content.get_page_content(ctx.session, ctx.document_id, page_number)
     images = content.list_page_images(ctx.session, ctx.document_id, page_number)
-    return ToolResult.json(
+    result = ToolResult.json(
         {"page_number": page_number, "markdown": page["markdown"], "images": images}
     )
+    result.page_numbers = [page_number]
+    return result
 
 
 @register(

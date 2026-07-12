@@ -262,13 +262,14 @@ export async function* streamChat(
   currentPage: number,
   profile: string,
   messages: ChatMessage[],
+  conversationId?: number,
 ): AsyncGenerator<ChatEvent> {
   const res = await fetch(
     `${API_BASE}/documents/${documentId}/chat?page=${currentPage}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profile, messages }),
+      body: JSON.stringify({ profile, messages, conversation_id: conversationId }),
     },
   )
   if (!res.ok || !res.body) {

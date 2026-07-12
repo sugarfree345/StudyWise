@@ -287,7 +287,13 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     let activityTrace: ChatActivity[] = []
     let durationMs: number | undefined
     try {
-      for await (const ev of streamChat(doc.id, currentPage, selectedProfile, history)) {
+      for await (const ev of streamChat(
+        doc.id,
+        currentPage,
+        selectedProfile,
+        history,
+        activeConversationId,
+      )) {
         if (ev.type === 'delta') {
           answer += ev.text
           setMessages((prev) => {

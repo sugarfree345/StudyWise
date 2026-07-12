@@ -4,7 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import ChatConversation, ChatConversationMessage, Document
+from app.models import (
+    ChatConversation,
+    ChatConversationMessage,
+    ChatConversationPageContext,
+    Document,
+)
 from app.schemas.conversation import (
     ConversationCreate,
     ConversationDetail,
@@ -114,5 +119,11 @@ def delete_conversation(
     _conversation_or_404(document_id, conversation_id, session)
     for message in _messages(conversation_id, session):
         session.delete(message)
+    for item in session.exec(
+        select(ChatConversationPageContext).where(
+            ChatConversationPageContext.conversation_id == conversation_id
+        )
+    ).all():
+        session.delete(item)
     session.delete(session.get(ChatConversation, conversation_id))
     session.commit()
