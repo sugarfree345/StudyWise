@@ -1,6 +1,7 @@
 """chat 路由的提示词组装：确保 system 静态；页码随用户问题持久化，
 从而 system + 工具 + 历史形成可递增的缓存前缀。"""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,8 +11,11 @@ from sqlmodel import Session, SQLModel, create_engine
 from app.api.routes.chat import (
     _build_document_system,
     _document_prompt_cache_key,
+    _sse,
+    _tool_result_activity,
 )
 from app.models import Document, DocumentPage, Project
+from app.services.llm.tools import ToolResult
 
 
 class ChatPromptTests(unittest.TestCase):
@@ -85,6 +89,28 @@ class ChatPromptTests(unittest.TestCase):
         self.assertEqual(first, _document_prompt_cache_key(42, "gpt-5.5"))
         self.assertNotEqual(first, _document_prompt_cache_key(42, "gpt-4.1-mini"))
         self.assertNotIn("42", first)
+
+
+class ChatSseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_includes_activity_and_duration(self):
+        class Provider:
+            async def stream_chat(self, **_kwargs):
+                yield "回答"
+
+        chunks = [chunk async for chunk in _sse("system", Provider(), [])]
+        events = [json.loads(chunk.removeprefix("data: ").strip()) for chunk in chunks]
+
+        self.assertEqual(events[0]["type"], "activity")
+        self.assertEqual(events[0]["activity"]["kind"], "status")
+        self.assertTrue(any(event.get("type") == "delta" for event in events))
+        done = next(event for event in events if event.get("type") == "done")
+        self.assertGreaterEqual(done["duration_ms"], 0)
+
+    def test_tool_result_preview_is_bounded(self):
+        activity = _tool_result_activity(ToolResult(text="x" * 3000))
+        self.assertTrue(activity["truncated"])
+        self.assertEqual(activity["result_chars"], 3000)
+        self.assertLess(len(activity["result"]), 2600)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Plus, Send, Trash2 } from 'lucide-react'
+import { Check, CircleAlert, LoaderCircle, Plus, Send, Trash2, Wrench } from 'lucide-react'
 
 import Markdown from '@/components/study/Markdown'
 import {
@@ -11,6 +11,7 @@ import {
   listModels,
   saveConversation,
   streamChat,
+  type ChatActivity,
   type ChatMessage,
   type ChatUsage,
   type DocumentInfo,
@@ -28,7 +29,82 @@ interface ChatPanelProps {
  * ``content`` 只用于界面展示；``requestContent`` 用一个紧凑标签记录消息发送时
  * 的界面页码，供模型解析指代与规划工具调用，同时保持历史前缀不可变。
  */
-type ChatEntry = ChatMessage & { requestContent?: string; usage?: ChatUsage }
+type ChatEntry = ChatMessage & {
+  requestContent?: string
+  usage?: ChatUsage
+  activityTrace?: ChatActivity[]
+  durationMs?: number
+  startedAt?: number
+}
+
+function formatDuration(milliseconds: number): string {
+  const seconds = Math.max(0, milliseconds) / 1000
+  if (seconds < 10) return `${seconds.toFixed(1)}s`
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}m ${Math.round(seconds % 60)}s`
+}
+
+function ActivityTrace({
+  activities,
+  active,
+  startedAt,
+  durationMs,
+  now,
+}: {
+  activities: ChatActivity[]
+  active: boolean
+  startedAt?: number
+  durationMs?: number
+  now: number
+}) {
+  const elapsed = durationMs ?? (startedAt ? now - startedAt : 0)
+  return (
+    <details className="group mb-1.5 w-[85%] text-xs text-muted-foreground">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors hover:bg-muted [&::-webkit-details-marker]:hidden">
+        {active ? <LoaderCircle className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
+        <span className="tabular-nums">{active ? 'Working' : 'Worked'} for {formatDuration(elapsed)}</span>
+        {activities.some((item) => item.kind === 'tool_call') && (
+          <span>· {activities.filter((item) => item.kind === 'tool_call').length} 次工具调用</span>
+        )}
+      </summary>
+      <div className="mt-1.5 space-y-2 border-l border-border pl-3">
+        {activities.map((activity, activityIndex) => {
+          if (activity.kind === 'status') {
+            return <p key={activityIndex}>{activity.message}</p>
+          }
+          if (activity.kind === 'tool_call') {
+            return (
+              <div key={activityIndex} className="rounded-md border border-border bg-background/70 p-2">
+                <p className="flex items-center gap-1.5 font-medium text-foreground">
+                  <Wrench className="size-3.5" /> 调用 {activity.tool}
+                </p>
+                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-relaxed">
+                  {JSON.stringify(activity.arguments, null, 2)}
+                </pre>
+              </div>
+            )
+          }
+          return (
+            <div key={activityIndex} className="rounded-md border border-border bg-background/70 p-2">
+              <p className={`flex items-center gap-1.5 font-medium ${activity.is_error ? 'text-destructive' : 'text-foreground'}`}>
+                {activity.is_error ? <CircleAlert className="size-3.5" /> : <Check className="size-3.5" />}
+                {activity.tool} 返回
+                {activity.has_image && ' · 含图片'}
+                {activity.truncated && ` · 已截断（${activity.result_chars.toLocaleString()} 字符）`}
+              </p>
+              {activity.result && (
+                <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed">
+                  {activity.result}
+                </pre>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </details>
+  )
+}
 
 function withPageContext(question: string, page: number): string {
   return `${question}\n\n[ui_page=${page}]`
@@ -48,6 +124,8 @@ function toSavedMessage(message: ChatEntry): SavedChatMessage {
     output_tokens: message.usage?.output_tokens,
     cached_tokens: message.usage?.cached_tokens,
     total_tokens: message.usage?.total_tokens,
+    activity_trace: message.activityTrace,
+    duration_ms: message.durationMs,
   }
 }
 
@@ -64,7 +142,14 @@ function fromSavedMessage(message: SavedChatMessage): ChatEntry {
           cached_tokens: message.cached_tokens,
           total_tokens: message.total_tokens,
         }
-  return { role: message.role, content: message.content, requestContent: message.request_content ?? undefined, usage }
+  return {
+    role: message.role,
+    content: message.content,
+    requestContent: message.request_content ?? undefined,
+    usage,
+    activityTrace: message.activity_trace ?? undefined,
+    durationMs: message.duration_ms ?? undefined,
+  }
 }
 
 /** 针对当前页的对话面板：模型选择 + 可恢复会话 + 流式回答。 */
@@ -81,6 +166,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
   const [conversationId, setConversationId] = useState<number | null>(null)
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  const [clock, setClock] = useState(() => Date.now())
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   // 仅在用户仍停留在底部附近时跟随流式输出；手动上滑后不再抢回滚动位置。
@@ -100,6 +186,13 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
       container.scrollTop = container.scrollHeight
     }
   }, [messages])
+
+  useEffect(() => {
+    if (!streaming) return
+    setClock(Date.now())
+    const timer = window.setInterval(() => setClock(Date.now()), 100)
+    return () => window.clearInterval(timer)
+  }, [streaming])
 
   function updateFollowLatest() {
     const container = scrollRef.current
@@ -178,7 +271,12 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
       return
     }
 
-    const initialEntries = [...messages, userEntry, { role: 'assistant' as const, content: '' }]
+    const startedAt = Date.now()
+    const initialEntries = [
+      ...messages,
+      userEntry,
+      { role: 'assistant' as const, content: '', activityTrace: [], startedAt },
+    ]
     setMessages(initialEntries)
     setInput('')
     setStreaming(true)
@@ -186,6 +284,8 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
 
     let answer = ''
     let usage: ChatUsage | undefined
+    let activityTrace: ChatActivity[] = []
+    let durationMs: number | undefined
     try {
       for await (const ev of streamChat(doc.id, currentPage, selectedProfile, history)) {
         if (ev.type === 'delta') {
@@ -195,6 +295,13 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
             next[next.length - 1] = { ...next[next.length - 1], role: 'assistant', content: answer }
             return next
           })
+        } else if (ev.type === 'activity') {
+          activityTrace = [...activityTrace, ev.activity]
+          setMessages((prev) => {
+            const next = [...prev]
+            next[next.length - 1] = { ...next[next.length - 1], activityTrace }
+            return next
+          })
         } else if (ev.type === 'usage') {
           usage = ev
           setMessages((prev) => {
@@ -202,15 +309,24 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
             next[next.length - 1] = { ...next[next.length - 1], role: 'assistant', usage }
             return next
           })
+        } else if (ev.type === 'done') {
+          durationMs = ev.duration_ms
+          setMessages((prev) => {
+            const next = [...prev]
+            next[next.length - 1] = { ...next[next.length - 1], durationMs }
+            return next
+          })
         } else if (ev.type === 'error') {
+          durationMs = ev.duration_ms ?? Date.now() - startedAt
           setError(ev.message)
         }
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      const savedEntries: ChatEntry[] = answer
-        ? [...messages, userEntry, { role: 'assistant', content: answer, usage }]
+      durationMs ??= Date.now() - startedAt
+      const savedEntries: ChatEntry[] = answer || activityTrace.length > 0
+        ? [...messages, userEntry, { role: 'assistant', content: answer, usage, activityTrace, durationMs }]
         : [...messages, userEntry]
       setMessages(savedEntries)
       setStreaming(false)
@@ -287,9 +403,20 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
         )}
         {messages.map((message, index) => (
           <div key={index} className={message.role === 'user' ? 'flex justify-end' : 'flex flex-col items-start'}>
-            <div className={message.role === 'user' ? 'max-w-[85%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground' : 'max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm'}>
-              {message.role === 'user' ? message.content : <Markdown>{message.content || '…'}</Markdown>}
-            </div>
+            {message.role === 'assistant' && (message.activityTrace || message.startedAt || message.durationMs != null) && (
+              <ActivityTrace
+                activities={message.activityTrace ?? []}
+                active={streaming && index === messages.length - 1}
+                startedAt={message.startedAt}
+                durationMs={message.durationMs}
+                now={clock}
+              />
+            )}
+            {(message.role === 'user' || message.content) && (
+              <div className={message.role === 'user' ? 'max-w-[85%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground' : 'max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm'}>
+                {message.role === 'user' ? message.content : <Markdown>{message.content}</Markdown>}
+              </div>
+            )}
             {message.role === 'assistant' && message.usage && (
               <p className="mt-1 text-[11px] tabular-nums text-muted-foreground">
                 {message.usage.total_tokens.toLocaleString()} tokens（输入 {message.usage.input_tokens.toLocaleString()} · 输出 {message.usage.output_tokens.toLocaleString()}

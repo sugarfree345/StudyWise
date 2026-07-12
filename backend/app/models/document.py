@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -79,6 +79,8 @@ class ChatConversationMessage(SQLModel, table=True):
     output_tokens: int | None = None
     cached_tokens: int | None = None
     total_tokens: int | None = None
+    activity_trace: list[dict] | None = Field(default=None, sa_column=Column(JSON))
+    duration_ms: int | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
 

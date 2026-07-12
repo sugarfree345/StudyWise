@@ -31,6 +31,13 @@ def migrate_schema(engine: Engine) -> None:
             connection.exec_driver_sql(
                 "INSERT OR REPLACE INTO appmeta (key, value) VALUES ('schema_version', '2')"
             )
+            version = 2
+
+        if version < 3:
+            _migrate_v3(connection)
+            connection.exec_driver_sql(
+                "INSERT OR REPLACE INTO appmeta (key, value) VALUES ('schema_version', '3')"
+            )
 
 
 def _migrate_v1(connection) -> None:
@@ -117,6 +124,12 @@ def _migrate_v2(connection) -> None:
         "CREATE INDEX IF NOT EXISTS ix_chatconversationmessage_conversation_id "
         "ON chatconversationmessage (conversation_id)"
     )
+
+
+def _migrate_v3(connection) -> None:
+    """保存可展开的 Agent 活动轨迹与单轮耗时，供恢复对话后继续查看。"""
+    _add_column(connection, "chatconversationmessage", "activity_trace", "JSON")
+    _add_column(connection, "chatconversationmessage", "duration_ms", "INTEGER")
 
 
 def _add_column(connection, table: str, column: str, definition: str) -> None:

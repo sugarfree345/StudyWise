@@ -47,6 +47,16 @@ class ConversationRouteTests(unittest.TestCase):
                                 output_tokens=20,
                                 cached_tokens=64,
                                 total_tokens=120,
+                                activity_trace=[
+                                    {"kind": "status", "message": "正在分析问题"},
+                                    {
+                                        "kind": "tool_call",
+                                        "id": "tool-1",
+                                        "tool": "get_text",
+                                        "arguments": {"first_page": 2, "last_page": 2},
+                                    },
+                                ],
+                                duration_ms=1234,
                             ),
                         ],
                     ),
@@ -59,6 +69,10 @@ class ConversationRouteTests(unittest.TestCase):
                 restored = get_conversation(1, created.id, session)
                 self.assertEqual(restored.messages[0].request_content, "这页讲什么？\n\n（提问时当前第 2 页。）")
                 self.assertEqual(restored.messages[1].cached_tokens, 64)
+                self.assertEqual(restored.messages[1].duration_ms, 1234)
+                self.assertEqual(
+                    restored.messages[1].activity_trace[1]["tool"], "get_text"
+                )
                 self.assertEqual(list_conversations(1, session)[0].id, created.id)
 
                 # 再次保存同一对话会替换旧消息，不应因 position=0/1 冲突失败。

@@ -7,7 +7,10 @@
 - 走 SSE 流式返回；provider 抛错时以 error 事件收尾，而不是中途 500。
 """
 
+import asyncio
+import contextlib
 import json
+import time
 from hashlib import sha256
 from collections.abc import AsyncIterator
 
@@ -26,6 +29,28 @@ from app.services.llm.tools import ToolContext, run_tool, tool_specs
 from app.services.study_content_service import get_page_content
 
 router = APIRouter(tags=["chat"])
+
+_TOOL_RESULT_PREVIEW_CHARS = 2400
+
+
+def _tool_result_activity(result) -> dict:
+    """把工具结果变成可安全展示的调试摘要。
+
+    原始图像与过长页面不进 SSE/对话库；前端仍能看到工具是否
+    返回了图片、原文长度和足以定位问题的文本片段。
+    """
+    text = result.text or ""
+    truncated = len(text) > _TOOL_RESULT_PREVIEW_CHARS
+    preview = text[:_TOOL_RESULT_PREVIEW_CHARS]
+    if truncated:
+        preview = f"{preview}\n……（已截断，原文共 {len(text)} 字符）"
+    return {
+        "result": preview,
+        "result_chars": len(text),
+        "truncated": truncated,
+        "has_image": result.image is not None,
+        "is_error": result.is_error,
+    }
 
 
 @router.get("/models", response_model=list[PublicProfile])
@@ -149,9 +174,12 @@ async def _sse(
     传入 tool_document_id 时开启工具调用：单独开一个数据库会话贯穿整个流式过程
     （请求级会话在响应体流式期间不保证可用），供工具执行读写。
     """
+    started_at = time.perf_counter()
+    event_queue: asyncio.Queue[dict | None] = asyncio.Queue()
     tool_session = None
     tools = None
     tool_runner = None
+    tool_sequence = 0
     if tool_document_id is not None:
         tool_session = Session(engine)
         ctx = ToolContext(
@@ -162,23 +190,72 @@ async def _sse(
         tools = tool_specs()
 
         def tool_runner(name: str, arguments: dict):
-            return run_tool(ctx, name, arguments)
+            nonlocal tool_sequence
+            tool_sequence += 1
+            activity_id = f"tool-{tool_sequence}"
+            event_queue.put_nowait(
+                {
+                    "type": "activity",
+                    "activity": {
+                        "kind": "tool_call",
+                        "id": activity_id,
+                        "tool": name,
+                        "arguments": arguments,
+                    },
+                }
+            )
+            result = run_tool(ctx, name, arguments)
+            event_queue.put_nowait(
+                {
+                    "type": "activity",
+                    "activity": {
+                        "kind": "tool_result",
+                        "id": activity_id,
+                        "tool": name,
+                        **_tool_result_activity(result),
+                    },
+                }
+            )
+            event_queue.put_nowait(
+                {
+                    "type": "activity",
+                    "activity": {
+                        "kind": "status",
+                        "message": "正在结合工具结果并检查上下文",
+                    },
+                }
+            )
+            return result
 
     usage = Usage()
-    try:
-        async for delta in provider.stream_chat(
-            system=system,
-            messages=messages,
-            tools=tools,
-            tool_runner=tool_runner,
-            usage=usage,
-            prompt_cache_key=prompt_cache_key,
-        ):
-            yield f"data: {json.dumps({'type': 'delta', 'text': delta}, ensure_ascii=False)}\n\n"
-        # 一次提问（可能含多轮工具调用）的累计 token 用量，供前端展示。
-        yield (
-            "data: "
-            + json.dumps(
+    async def produce_events() -> None:
+        answer_started = False
+        event_queue.put_nowait(
+            {
+                "type": "activity",
+                "activity": {"kind": "status", "message": "正在分析问题与可用上下文"},
+            }
+        )
+        try:
+            async for delta in provider.stream_chat(
+                system=system,
+                messages=messages,
+                tools=tools,
+                tool_runner=tool_runner,
+                usage=usage,
+                prompt_cache_key=prompt_cache_key,
+            ):
+                if not answer_started:
+                    answer_started = True
+                    event_queue.put_nowait(
+                        {
+                            "type": "activity",
+                            "activity": {"kind": "status", "message": "正在生成回答"},
+                        }
+                    )
+                event_queue.put_nowait({"type": "delta", "text": delta})
+            # 一次提问（可能含多轮工具调用）的累计 token 用量。
+            event_queue.put_nowait(
                 {
                     "type": "usage",
                     "input_tokens": usage.input_tokens,
@@ -187,13 +264,36 @@ async def _sse(
                     "total_tokens": usage.total_tokens,
                 }
             )
-            + "\n\n"
-        )
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
-    except Exception as exc:  # noqa: BLE001 — 把上游错误变成流内 error 事件
-        logger.exception("LLM 流式调用失败")
-        yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+            event_queue.put_nowait(
+                {
+                    "type": "done",
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 — 把上游错误变成流内 error 事件
+            logger.exception("LLM 流式调用失败")
+            event_queue.put_nowait(
+                {
+                    "type": "error",
+                    "message": str(exc),
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000),
+                }
+            )
+        finally:
+            event_queue.put_nowait(None)
+
+    producer = asyncio.create_task(produce_events())
+    try:
+        while True:
+            event = await event_queue.get()
+            if event is None:
+                break
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
     finally:
+        if not producer.done():
+            producer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await producer
         if tool_session is not None:
             tool_session.close()
 

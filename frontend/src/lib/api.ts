@@ -167,12 +167,28 @@ export interface ChatUsage {
   total_tokens: number
 }
 
+export type ChatActivity =
+  | { kind: 'status'; message: string }
+  | { kind: 'tool_call'; id: string; tool: string; arguments: Record<string, unknown> }
+  | {
+      kind: 'tool_result'
+      id: string
+      tool: string
+      result: string
+      result_chars: number
+      truncated: boolean
+      has_image: boolean
+      is_error: boolean
+    }
+
 export interface SavedChatMessage extends ChatMessage {
   request_content?: string | null
   input_tokens?: number | null
   output_tokens?: number | null
   cached_tokens?: number | null
   total_tokens?: number | null
+  activity_trace?: ChatActivity[] | null
+  duration_ms?: number | null
 }
 
 export interface ConversationSummary {
@@ -227,8 +243,9 @@ export function deleteConversation(documentId: number, conversationId: number) {
 
 type ChatEvent =
   | { type: 'delta'; text: string }
-  | { type: 'done' }
-  | { type: 'error'; message: string }
+  | { type: 'activity'; activity: ChatActivity }
+  | { type: 'done'; duration_ms: number }
+  | { type: 'error'; message: string; duration_ms?: number }
   | ({ type: 'usage' } & ChatUsage)
 
 function parseSseEvent(chunk: string): ChatEvent | null {
