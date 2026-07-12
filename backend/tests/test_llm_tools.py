@@ -106,16 +106,7 @@ class ToolLayerTests(unittest.TestCase):
         )
         self.assertTrue(missing.is_error)
 
-    def test_current_page_context_and_document_search(self) -> None:
-        self.ctx.current_page = 3
-        current = tools.run_tool(
-            self.ctx, "get_current_page_context", {"before_pages": 1}
-        )
-        self.assertFalse(current.is_error)
-        self.assertIn("当前为第 3 页", current.text)
-        self.assertIn("第 2 页", current.text)
-        self.assertIn("第 3 页", current.text)
-
+    def test_document_search(self) -> None:
         search = self._payload(
             tools.run_tool(self.ctx, "search_document", {"query": "贝叶斯公式"})
         )
@@ -188,11 +179,10 @@ class ToolLayerTests(unittest.TestCase):
         self.assertEqual(len(tools.anthropic_tools()), len(tools.tool_specs()))
         self.assertEqual(tools.openai_tools()[0]["type"], "function")
         self.assertIn("input_schema", tools.anthropic_tools()[0])
-        # 9 个页面/图片/文本工具应全部注册
-        self.assertEqual(len(tools.tool_specs()), 9)
+        # 8 个页面/图片/文本工具应全部注册
+        self.assertEqual(len(tools.tool_specs()), 8)
         self.assertIn("get_text", tools.registered_names())
         self.assertIn("get_full_pdf_text", tools.registered_names())
-        self.assertIn("get_current_page_context", tools.registered_names())
         self.assertIn("search_document", tools.registered_names())
 
 

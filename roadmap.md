@@ -36,8 +36,3 @@
    - `get_page_render(page_number)`：获取整页渲染图
    - `classify_image(...)`：写入图片分类、简介和重要性
 
-7. [ ] 优化图片检索与 Token 消耗
-   - 使用内容哈希识别跨页重复图片
-   - 为图片保存 `unknown / useful / decorative` 分类
-   - 记录简介、重要性、检索次数和 OCR 置信度
-   - 已确认的装饰图片只向模型提供简短描述

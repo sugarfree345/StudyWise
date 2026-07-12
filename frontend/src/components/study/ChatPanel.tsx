@@ -25,18 +25,13 @@ interface ChatPanelProps {
 }
 
 /**
- * ``content`` 只用于界面展示；仅当用户明确指向当前页时，``requestContent`` 才
- * 记录提问页码，供未来追问理解该历史指代。普通问题不绑定当前页。
+ * ``content`` 只用于界面展示；``requestContent`` 用一个紧凑标签记录消息发送时
+ * 的界面页码，供模型解析指代与规划工具调用，同时保持历史前缀不可变。
  */
 type ChatEntry = ChatMessage & { requestContent?: string; usage?: ChatUsage }
 
-function refersToCurrentPage(question: string): boolean {
-  return /当前页|这一页|这页|本页|此页|这张图|这幅图|这张表/.test(question)
-}
-
 function withPageContext(question: string, page: number): string {
-  if (!refersToCurrentPage(question)) return question
-  return `${question}\n\n（提问时当前第 ${page} 页；本问题中的「这一页/当前页」即指此页。）`
+  return `${question}\n\n[ui_page=${page}]`
 }
 
 function conversationTitle(messages: ChatEntry[]): string {
