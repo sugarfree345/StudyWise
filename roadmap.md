@@ -36,3 +36,5 @@
    - `get_page_render(page_number)`：获取整页渲染图
    - `classify_image(...)`：写入图片分类、简介和重要性
 
+## 有计划
+- [ ] 加入笔记功能, 每一页都可以做笔记
