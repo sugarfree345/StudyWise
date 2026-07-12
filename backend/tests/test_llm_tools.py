@@ -173,7 +173,8 @@ class ToolLayerTests(unittest.TestCase):
     # ── provider 定义转换 ─────────────────────────────────
 
     def test_tool_specs_match_handlers(self) -> None:
-        spec_names = {spec.name for spec in tools.tool_specs()}
+        specs = {spec.name: spec for spec in tools.tool_specs()}
+        spec_names = set(specs)
         self.assertEqual(spec_names, set(tools.registered_names()))
         self.assertEqual(len(tools.openai_tools()), len(tools.tool_specs()))
         self.assertEqual(len(tools.anthropic_tools()), len(tools.tool_specs()))
@@ -184,6 +185,10 @@ class ToolLayerTests(unittest.TestCase):
         self.assertIn("get_text", tools.registered_names())
         self.assertIn("get_full_pdf_text", tools.registered_names())
         self.assertIn("search_document", tools.registered_names())
+        self.assertIn("必须继续读取", specs["get_text"].description)
+        self.assertIn("高成本工具", specs["get_full_pdf_text"].description)
+        self.assertIn("命中只是候选", specs["search_document"].description)
+        self.assertIn("OCR", specs["get_page_render"].description)
 
 
 if __name__ == "__main__":

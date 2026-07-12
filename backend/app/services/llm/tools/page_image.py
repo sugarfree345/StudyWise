@@ -36,11 +36,10 @@ def _join_pages(pages: list[dict]) -> str:
     name="get_full_pdf_text",
     description=(
         "获取整份 PDF 全部页拼接后的 Markdown 全文（每页前带页码标注）。"
-        "仅在你对这份文档【一无所知】、需要先建立对它整体内容与结构的了解时才调用："
-        "典型场景是对话刚开始、你的上下文还是空的，根本不知道这份文档讲什么，"
-        "先调它通读一遍。"
-        "如果你已经大致了解文档、只想看某一页或某几页，请改用 get_text，不要用本工具，"
-        "以免浪费上下文。"
+        "这是高成本工具：只在用户明确要求整本通读/全书总结/全局对比，"
+        "且目录、摘要、search_document 和分页 get_text 无法合理完成时才调用。"
+        "不要仅因为对话刚开始或你尚不了解文档就通读全文。"
+        "只需一页、数页或某个主题时，分别使用 get_text 或 search_document。"
     ),
     parameters={"type": "object", "properties": {}},
 )
@@ -52,9 +51,13 @@ def get_full_pdf_text(ctx: ToolContext, args: dict) -> ToolResult:
 @register(
     name="get_text",
     description=(
-        "获取某个页码区间的 Markdown 正文（含首尾页），多页会按页拼接返回。"
-        "这是最常用的取文工具：用户问「当前页/这一页」时，把 first_page 和 "
-        "last_page 都设为当前页即可；需要上下文时再扩大区间。"
+        "读取一个连续页码区间的 Markdown 正文（含首尾页），结果中每页明确标注页码。"
+        "当问题依赖已知页面的文字、公式、题目、条件或推导，"
+        "或 search_document 已经找到候选页时使用。"
+        "已知准确页码时先读最小范围；单页时 first_page 与 last_page 相同。"
+        "获得结果后，如果页面是解答/证明/推导/续页，出现「由上式/根据前文」，"
+        "或缺少题目、定义、符号、条件、图表，必须继续读取最少必要的相关页，"
+        "通常先扩展相邻 1–2 页。当问题、必要前提和结论已齐全时停止，不要无限扩大范围。"
     ),
     parameters={
         "type": "object",
@@ -78,8 +81,11 @@ def get_text(ctx: ToolContext, args: dict) -> ToolResult:
     name="search_document",
     description=(
         "按关键词在整份 PDF 的已解析 Markdown 中定位相关页，返回页码和短片段，不返回全文。"
-        "当用户提到某个概念、公式或术语却不知道页码，且对话历史也无法定位时先调用本工具；"
-        "根据命中结果再调用 get_text 或 get_page_content 阅读必要页面。"
+        "当问题依赖文档中的概念、公式、术语或原句，但准确页码未知且对话历史无法定位时使用。"
+        "已知页码时直接用 get_text，不要搜索；也不要因为界面停在某页就把该页当作搜索结果。"
+        "query 应是有区分度的术语、公式变量或短语，不要传整段问题。"
+        "命中只是候选：必须再调用 get_text 阅读命中页，"
+        "并根据题目、定义、推导是否完整决定是否补读相邻页。"
     ),
     parameters={
         "type": "object",
@@ -103,7 +109,8 @@ def search_document(ctx: ToolContext, args: dict) -> ToolResult:
     name="get_page_content",
     description=(
         "获取指定页的 Markdown 正文和该页图片的元数据列表。"
-        "先看元数据里的 summary 决定是否有必要再调用 get_image 取原图。"
+        "当回答同时需要页面正文与图片索引时使用；只需文字时优先 get_text。"
+        "先看图片元数据中的 summary 决定是否需要 get_image 原图，避免无意义的图像回传。"
     ),
     parameters={
         "type": "object",
@@ -172,7 +179,8 @@ def get_useful_images(ctx: ToolContext, args: dict) -> ToolResult:
     name="get_page_render",
     description=(
         "获取整页的渲染大图（含版式与图文）。当页面排版复杂、"
-        "仅靠 Markdown 无法理解时使用。"
+        "Markdown/OCR 内容缺失或乱序，或需要理解公式排版、图表空间关系时使用。"
+        "如果 get_text 已能完整回答，不要再取整页图。"
     ),
     parameters={
         "type": "object",

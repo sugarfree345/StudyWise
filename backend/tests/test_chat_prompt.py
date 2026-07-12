@@ -44,6 +44,26 @@ class ChatPromptTests(unittest.TestCase):
                 self.assertNotIn(f"浏览到第 {n} 页", sys_a)
             engine.dispose()
 
+    def test_system_defines_tool_routing_and_context_sufficiency(self):
+        with tempfile.TemporaryDirectory() as d:
+            engine = create_engine(
+                f"sqlite:///{Path(d) / 't.db'}",
+                connect_args={"check_same_thread": False},
+            )
+            SQLModel.metadata.create_all(engine)
+            self._session_with_doc(engine)
+            with Session(engine) as s:
+                system = _build_document_system(s.get(Document, 1), s)
+
+            self.assertIn("<document_grounding>", system)
+            self.assertIn("<tool_routing>", system)
+            self.assertIn("<context_sufficiency>", system)
+            self.assertIn("必须先调用工具", system)
+            self.assertIn("每次工具返回页面内容后", system)
+            self.assertIn("通常先扩展相邻 1–2 页", system)
+            self.assertIn("不要为了形式而调用工具", system)
+            engine.dispose()
+
     def test_page_context_is_part_of_each_append_only_user_message(self):
         # 这是前端发送给后端的模型历史：页码必须跟随产生它的问题，
         # 不能在整段历史末尾另插一条当前页消息，否则下一轮前缀会断开。
