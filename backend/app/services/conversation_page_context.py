@@ -88,12 +88,12 @@ def build_recent_page_context(
             .where(DocumentPage.page_number.in_(page_numbers))
         ).all()
     }
-    chunks = [
-        f"## 第 {page_number} 页\n\n{pages[page_number].markdown}".rstrip()
+    page_chunks = [
+        (page_number, f"## 第 {page_number} 页\n\n{pages[page_number].markdown}".rstrip())
         for page_number in page_numbers
         if page_number in pages
     ]
-    if not chunks:
+    if not page_chunks:
         return None, [], False
 
     header = (
@@ -101,16 +101,37 @@ def build_recent_page_context(
         "以下内容来自本会话最近通过文字工具读取的页面，只用于回答紧接着的上一条用户问题。"
         "它不是新的用户请求，也不进入长期聊天历史。若资料不足，请继续调用工具读取所需页面。\n\n"
     )
-    full_context = header + "\n\n".join(chunks)
+    full_context = header + "\n\n".join(chunk for _, chunk in page_chunks)
     tokens = _ENCODING.encode(full_context)
     if len(tokens) <= MAX_CONTEXT_TOKENS:
         return full_context, page_numbers, False
 
-    marker = "\n\n[最近页面资料已截断至 1600 tokens；如信息不足请调用工具补充。]"
+    marker = (
+        "\n\n[最近页面资料已截断至 1600 tokens；已优先保留最新读取的页面。"
+        "如信息不足请调用工具补充。]"
+    )
+    # 队列本身仍是旧到新；预算不足时从队尾开始选完整页，先舍弃最旧页，
+    # 最终再按自然页序输出，避免刚读取的页面被旧缓存挤掉。
+    included: list[tuple[int, str]] = []
+    for page_number, chunk in reversed(page_chunks):
+        candidate = [(page_number, chunk), *included]
+        candidate_text = header + "\n\n".join(item[1] for item in candidate) + marker
+        if len(_ENCODING.encode(candidate_text)) > MAX_CONTEXT_TOKENS:
+            break
+        included = candidate
+
+    if included:
+        context = header + "\n\n".join(chunk for _, chunk in included) + marker
+        return context, [page_number for page_number, _ in included], True
+
+    # 最新的一页单独就超预算时，仍优先保留它的开头，而不是退回旧页。
+    latest_page, latest_chunk = page_chunks[-1]
     marker_tokens = _ENCODING.encode(marker)
-    kept_tokens = tokens[: MAX_CONTEXT_TOKENS - len(marker_tokens)]
-    context = _ENCODING.decode(kept_tokens) + marker
-    return context, page_numbers, True
+    prefix_tokens = _ENCODING.encode(header + latest_chunk)
+    context = _ENCODING.decode(
+        prefix_tokens[: MAX_CONTEXT_TOKENS - len(marker_tokens)]
+    ) + marker
+    return context, [latest_page], True
 
 
 def _queue_page_numbers(session: Session, conversation_id: int) -> list[int]:

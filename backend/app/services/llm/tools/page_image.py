@@ -59,7 +59,8 @@ def get_full_pdf_text(ctx: ToolContext, args: dict) -> ToolResult:
         "读取一个连续页码区间的 Markdown 正文（含首尾页），结果中每页明确标注页码。"
         "当问题依赖已知页面的文字、公式、题目、条件或推导，"
         "或 search_document 已经找到候选页时使用。"
-        "已知准确页码时先读最小范围；单页时 first_page 与 last_page 相同。"
+        "首次读取单页时，默认自动带上前 2 页与后 1 页，避免题目、定义或推导跨页缺失；"
+        "只有用户明确只要原文、页码事实等精确单页内容时，才把 include_context 设为 false。"
         "一次最多返回从起始页开始的连续 8 页；即使 last_page 更大，也会在第 8 页处截断。"
         "获得结果后，如果页面是解答/证明/推导/续页，出现「由上式/根据前文」，"
         "或缺少题目、定义、符号、条件、图表，必须继续读取最少必要的相关页，"
@@ -70,6 +71,12 @@ def get_full_pdf_text(ctx: ToolContext, args: dict) -> ToolResult:
         "properties": {
             "first_page": {**_PAGE_NUMBER, "description": "起始页码（含），从 1 开始。"},
             "last_page": {**_PAGE_NUMBER, "description": "结束页码（含）。单页时与 first_page 相同。"},
+            "include_context": {
+                "type": "boolean",
+                "description": "仅当 first_page 与 last_page 相同时生效；默认 true，会返回前 2 页、当前页和后 1 页。"
+                "只需精确单页原文或字段时设为 false。",
+                "default": True,
+            },
         },
         "required": ["first_page", "last_page"],
     },
@@ -79,12 +86,23 @@ def get_text(ctx: ToolContext, args: dict) -> ToolResult:
     last_page = int(args["last_page"])
     if last_page < first_page:
         first_page, last_page = last_page, first_page
+    single_page_request = first_page == last_page
+    include_context = bool(args.get("include_context", True))
+    if single_page_request and include_context:
+        first_page = max(1, first_page - 2)
+        last_page += 1
+
     requested_last_page = last_page
     last_page = min(requested_last_page, first_page + _MAX_TEXT_PAGES - 1)
     pages = content.get_pages_markdown(
         ctx.session, ctx.document_id, first_page, last_page
     )
     text = _join_pages(pages)
+    if single_page_request and include_context:
+        text += (
+            f"\n\n[单页读取已自动扩展为第 {first_page}–{last_page} 页，"
+            "以补足可能跨页的题目、定义与推导。]"
+        )
     if requested_last_page > last_page:
         text += (
             f"\n\n[单次最多读取 {_MAX_TEXT_PAGES} 页：原请求结束于第 {requested_last_page} 页，"

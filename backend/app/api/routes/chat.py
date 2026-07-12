@@ -118,7 +118,9 @@ def _build_document_system(document: Document, session: Session) -> str:
         "<tool_routing>",
         "每条用户消息末尾的 [ui_page=N] 表示该消息发送时界面停留在第 N 页。"
         "N 只是定位参考：不要默认当前页必然相关，也不要默认它必然无关。",
-        "用户指向「当前页/这里/本页/这个公式」且需要正文时，用 get_text 精确读取第 N 页。",
+        "用户指向「当前页/这里/本页/这个公式」且需要正文时，直接用 get_text 读取第 N 页。"
+        "单页 get_text 会默认带回前 2 页与后 1 页；只有用户明确只要逐字原文、字段等精确单页信息时，"
+        "才将 include_context 设为 false。",
         "已知准确页码时直接用 get_text，不要先搜索。",
         "用户提到概念、公式或术语，但页码不明且历史无法定位时，"
         "先用 search_document 找候选页，再用 get_text 读取命中页。",

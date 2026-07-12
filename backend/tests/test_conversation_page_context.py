@@ -143,6 +143,35 @@ class ConversationPageContextTests(unittest.TestCase):
         encoding = tiktoken.get_encoding("o200k_base")
         self.assertLessEqual(len(encoding.encode(context)), MAX_CONTEXT_TOKENS)
 
+    def test_truncation_keeps_newest_pages_before_old_queue_entries(self):
+        for page_number in range(1, 9):
+            page = self.session.exec(
+                select(DocumentPage).where(
+                    DocumentPage.document_id == 1,
+                    DocumentPage.page_number == page_number,
+                )
+            ).one()
+            page.markdown = f"第{page_number}页" + "正文。" * 700
+            self.session.add(page)
+        self.session.commit()
+        record_pages(
+            self.session,
+            conversation_id=1,
+            page_numbers=list(range(1, 9)),
+            turn=1,
+        )
+
+        context, pages, truncated = build_recent_page_context(
+            self.session,
+            conversation_id=1,
+            document_id=1,
+        )
+
+        self.assertTrue(truncated)
+        self.assertEqual(pages, [8])
+        self.assertIn("第 8 页", context)
+        self.assertNotIn("第 1 页", context)
+
 
 if __name__ == "__main__":
     unittest.main()

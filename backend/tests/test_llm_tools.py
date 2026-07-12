@@ -101,14 +101,27 @@ class ToolLayerTests(unittest.TestCase):
         self.assertEqual(result.page_numbers, list(range(1, 13)))
 
     def test_get_text_single_and_range(self) -> None:
-        # 单页
+        # 单页默认带前 2 页、当前页、后 1 页；第一页会自然裁到文档边界。
         single = tools.run_tool(
             self.ctx, "get_text", {"first_page": 1, "last_page": 1}
         )
         self.assertFalse(single.is_error)
         self.assertIn("第 1 页", single.text)
         self.assertIn("正文内容", single.text)
-        self.assertEqual(single.page_numbers, [1])
+        self.assertEqual(single.page_numbers, [1, 2])
+        self.assertIn("自动扩展为第 1–2 页", single.text)
+
+        contextual = tools.run_tool(
+            self.ctx, "get_text", {"first_page": 5, "last_page": 5}
+        )
+        self.assertEqual(contextual.page_numbers, [3, 4, 5, 6])
+
+        exact = tools.run_tool(
+            self.ctx,
+            "get_text",
+            {"first_page": 5, "last_page": 5, "include_context": False},
+        )
+        self.assertEqual(exact.page_numbers, [5])
 
         # 请求超过 8 页时，只返回从起始页开始的连续 8 页。
         bounded = tools.run_tool(
