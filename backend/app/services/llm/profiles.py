@@ -21,6 +21,8 @@ class ModelProfile(BaseModel):
     api_key: str = ""
     base_url: str | None = None                 # OpenAI 兼容端点在这里覆盖
     max_tokens: int = Field(default=2048, gt=0)
+    # 上下文窗口上限。可按具体部署模型在 models.json 覆盖；默认 128K。
+    context_window: int = Field(default=128_000, gt=0)
 
 
 class PublicProfile(BaseModel):
@@ -29,6 +31,7 @@ class PublicProfile(BaseModel):
     name: str
     style: Literal["openai", "anthropic"]
     model_id: str
+    context_window: int
 
 
 def profiles_path() -> Path:

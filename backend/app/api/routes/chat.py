@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlmodel import Session, select
+import tiktoken
 
 from app.db import engine, get_session
 from app.models import ChatConversation, Document, DocumentPage
@@ -35,6 +36,7 @@ from app.services.study_content_service import get_page_content
 router = APIRouter(tags=["chat"])
 
 _TOOL_RESULT_PREVIEW_CHARS = 2400
+_CONTEXT_ENCODING = tiktoken.get_encoding("o200k_base")
 
 
 def _tool_result_activity(result) -> dict:
@@ -61,7 +63,12 @@ def _tool_result_activity(result) -> dict:
 def list_models() -> list[PublicProfile]:
     """列出已配置的模型档案（不含 api_key）。"""
     return [
-        PublicProfile(name=p.name, style=p.style, model_id=p.model_id)
+        PublicProfile(
+            name=p.name,
+            style=p.style,
+            model_id=p.model_id,
+            context_window=p.context_window,
+        )
         for p in load_profiles().values()
     ]
 
@@ -169,6 +176,20 @@ def _document_prompt_cache_key(document_id: int, model_id: str) -> str:
     return f"studywise:{sha256(identity.encode()).hexdigest()[:32]}"
 
 
+def _estimate_context_tokens(system: str, messages: list[dict], tools) -> int:
+    """估算首次模型请求占用的上下文，供 UI 展示，不混入工具循环的累计用量。"""
+    tool_definitions = [
+        {"name": tool.name, "description": tool.description, "parameters": tool.parameters}
+        for tool in (tools or [])
+    ]
+    payload = json.dumps(
+        {"system": system, "messages": messages, "tools": tool_definitions},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return len(_CONTEXT_ENCODING.encode(payload))
+
+
 async def _sse(
     system: str,
     provider,
@@ -179,6 +200,7 @@ async def _sse(
     prompt_cache_key: str | None = None,
     conversation_id: int | None = None,
     conversation_turn: int | None = None,
+    context_window: int = 128_000,
     reused_pages: list[int] | None = None,
     reused_context_truncated: bool = False,
 ) -> AsyncIterator[str]:
@@ -253,8 +275,16 @@ async def _sse(
             return result
 
     usage = Usage()
+    context_tokens = _estimate_context_tokens(system, messages, tools)
     async def produce_events() -> None:
         answer_started = False
+        event_queue.put_nowait(
+            {
+                "type": "context",
+                "context_tokens": context_tokens,
+                "context_window": context_window,
+            }
+        )
         if reused_pages:
             page_labels = "、".join(str(page) for page in reused_pages)
             suffix = "（已截断至 1600 tokens）" if reused_context_truncated else ""
@@ -418,6 +448,7 @@ def chat_document(
             prompt_cache_key=_document_prompt_cache_key(document_id, profile.model_id),
             conversation_id=conversation.id if conversation is not None else None,
             conversation_turn=conversation_turn if conversation is not None else None,
+            context_window=profile.context_window,
             reused_pages=reused_pages,
             reused_context_truncated=reused_context_truncated,
         ),

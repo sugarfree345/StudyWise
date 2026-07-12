@@ -100,8 +100,11 @@ class ChatSseTests(unittest.IsolatedAsyncioTestCase):
         chunks = [chunk async for chunk in _sse("system", Provider(), [])]
         events = [json.loads(chunk.removeprefix("data: ").strip()) for chunk in chunks]
 
-        self.assertEqual(events[0]["type"], "activity")
-        self.assertEqual(events[0]["activity"]["kind"], "status")
+        context = next(event for event in events if event.get("type") == "context")
+        self.assertGreater(context["context_tokens"], 0)
+        self.assertEqual(context["context_window"], 128_000)
+        first_status = next(event for event in events if event.get("type") == "activity")
+        self.assertEqual(first_status["activity"]["kind"], "status")
         self.assertTrue(any(event.get("type") == "delta" for event in events))
         done = next(event for event in events if event.get("type") == "done")
         self.assertGreaterEqual(done["duration_ms"], 0)

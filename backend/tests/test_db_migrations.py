@@ -34,9 +34,11 @@ class DatabaseMigrationTests(unittest.TestCase):
                 version = connection.exec_driver_sql(
                     "SELECT value FROM appmeta WHERE key = 'schema_version'"
                 ).scalar_one()
-            self.assertEqual(version, "5")
+            self.assertEqual(version, "6")
             self.assertIn("activity_trace", columns)
             self.assertIn("duration_ms", columns)
+            self.assertIn("context_tokens", columns)
+            self.assertIn("context_window", columns)
             with engine.connect() as connection:
                 page_context_tables = connection.exec_driver_sql(
                     "SELECT name FROM sqlite_master WHERE type = 'table' "
@@ -62,6 +64,9 @@ class DatabaseMigrationTests(unittest.TestCase):
                 )
                 connection.exec_driver_sql(
                     "INSERT INTO appmeta (key, value) VALUES ('schema_version', '4')"
+                )
+                connection.exec_driver_sql(
+                    "CREATE TABLE chatconversationmessage (id INTEGER PRIMARY KEY)"
                 )
                 connection.exec_driver_sql(
                     "CREATE TABLE chatconversationpagecontext ("

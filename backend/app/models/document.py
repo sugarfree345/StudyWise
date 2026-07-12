@@ -79,6 +79,8 @@ class ChatConversationMessage(SQLModel, table=True):
     output_tokens: int | None = None
     cached_tokens: int | None = None
     total_tokens: int | None = None
+    context_tokens: int | None = None
+    context_window: int | None = None
     activity_trace: list[dict] | None = Field(default=None, sa_column=Column(JSON))
     duration_ms: int | None = None
     created_at: datetime = Field(default_factory=utc_now)

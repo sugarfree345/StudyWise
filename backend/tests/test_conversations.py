@@ -47,6 +47,8 @@ class ConversationRouteTests(unittest.TestCase):
                                 output_tokens=20,
                                 cached_tokens=64,
                                 total_tokens=120,
+                                context_tokens=2_000,
+                                context_window=128_000,
                                 activity_trace=[
                                     {"kind": "status", "message": "正在分析问题"},
                                     {
@@ -69,6 +71,8 @@ class ConversationRouteTests(unittest.TestCase):
                 restored = get_conversation(1, created.id, session)
                 self.assertEqual(restored.messages[0].request_content, "这页讲什么？\n\n（提问时当前第 2 页。）")
                 self.assertEqual(restored.messages[1].cached_tokens, 64)
+                self.assertEqual(restored.messages[1].context_tokens, 2_000)
+                self.assertEqual(restored.messages[1].context_window, 128_000)
                 self.assertEqual(restored.messages[1].duration_ms, 1234)
                 self.assertEqual(
                     restored.messages[1].activity_trace[1]["tool"], "get_text"

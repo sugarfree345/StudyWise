@@ -148,6 +148,7 @@ export interface ModelProfile {
   name: string
   style: 'openai' | 'anthropic'
   model_id: string
+  context_window: number
 }
 
 export interface ChatMessage {
@@ -165,6 +166,11 @@ export interface ChatUsage {
   output_tokens: number
   cached_tokens: number
   total_tokens: number
+}
+
+export interface ChatContextUsage {
+  context_tokens: number
+  context_window: number
 }
 
 export type ChatActivity =
@@ -187,6 +193,8 @@ export interface SavedChatMessage extends ChatMessage {
   output_tokens?: number | null
   cached_tokens?: number | null
   total_tokens?: number | null
+  context_tokens?: number | null
+  context_window?: number | null
   activity_trace?: ChatActivity[] | null
   duration_ms?: number | null
 }
@@ -246,6 +254,7 @@ type ChatEvent =
   | { type: 'activity'; activity: ChatActivity }
   | { type: 'done'; duration_ms: number }
   | { type: 'error'; message: string; duration_ms?: number }
+  | ({ type: 'context' } & ChatContextUsage)
   | ({ type: 'usage' } & ChatUsage)
 
 function parseSseEvent(chunk: string): ChatEvent | null {

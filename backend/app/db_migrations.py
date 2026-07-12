@@ -52,6 +52,13 @@ def migrate_schema(engine: Engine) -> None:
             connection.exec_driver_sql(
                 "INSERT OR REPLACE INTO appmeta (key, value) VALUES ('schema_version', '5')"
             )
+            version = 5
+
+        if version < 6:
+            _migrate_v6(connection)
+            connection.exec_driver_sql(
+                "INSERT OR REPLACE INTO appmeta (key, value) VALUES ('schema_version', '6')"
+            )
 
 
 def _migrate_v1(connection) -> None:
@@ -186,6 +193,12 @@ def _migrate_v5(connection) -> None:
         "CREATE INDEX IF NOT EXISTS ix_chatconversationpagecontext_conversation_id "
         "ON chatconversationpagecontext (conversation_id)"
     )
+
+
+def _migrate_v6(connection) -> None:
+    """保存每轮请求开始时的上下文窗口估算，供恢复对话后继续展示。"""
+    _add_column(connection, "chatconversationmessage", "context_tokens", "INTEGER")
+    _add_column(connection, "chatconversationmessage", "context_window", "INTEGER")
 
 
 def _add_column(connection, table: str, column: str, definition: str) -> None:

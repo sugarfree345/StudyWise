@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { Check, CircleAlert, LoaderCircle, Plus, Send, Trash2, Wrench } from 'lucide-react'
 
 import Markdown from '@/components/study/Markdown'
@@ -12,6 +13,7 @@ import {
   saveConversation,
   streamChat,
   type ChatActivity,
+  type ChatContextUsage,
   type ChatMessage,
   type ChatUsage,
   type DocumentInfo,
@@ -30,8 +32,10 @@ interface ChatPanelProps {
  * 的界面页码，供模型解析指代与规划工具调用，同时保持历史前缀不可变。
  */
 type ChatEntry = ChatMessage & {
+  id: string
   requestContent?: string
   usage?: ChatUsage
+  contextUsage?: ChatContextUsage
   activityTrace?: ChatActivity[]
   durationMs?: number
   startedAt?: number
@@ -43,6 +47,47 @@ function formatDuration(milliseconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`
   const minutes = Math.floor(seconds / 60)
   return `${minutes}m ${Math.round(seconds % 60)}s`
+}
+
+function formatTokens(tokens: number): string {
+  if (tokens < 1_000) return tokens.toLocaleString()
+  if (tokens < 1_000_000) return `${(tokens / 1_000).toFixed(tokens < 10_000 ? 1 : 0)}k`
+  return `${(tokens / 1_000_000).toFixed(1)}M`
+}
+
+function ContextRing({ context }: { context?: ChatContextUsage }) {
+  const windowSize = context?.context_window ?? 128_000
+  const used = context?.context_tokens ?? 0
+  const percent = Math.min(100, (used / windowSize) * 100)
+  const radius = 15
+  const circumference = 2 * Math.PI * radius
+  const offset = circumference * (1 - percent / 100)
+  return (
+    <div
+      className="flex items-center gap-2"
+      title={`本轮请求开始前的上下文估算：${used.toLocaleString()} / ${windowSize.toLocaleString()} tokens`}
+    >
+      <svg viewBox="0 0 36 36" className="size-9 -rotate-90" aria-label={`上下文窗口已使用 ${percent.toFixed(1)}%`}>
+        <circle cx="18" cy="18" r={radius} fill="none" stroke="currentColor" strokeWidth="3" className="text-muted" />
+        <circle
+          cx="18"
+          cy="18"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          className={percent >= 90 ? 'text-destructive' : percent >= 70 ? 'text-amber-500' : 'text-primary'}
+        />
+      </svg>
+      <div className="leading-tight">
+        <p className="text-xs font-medium tabular-nums">Context {percent.toFixed(percent < 10 ? 1 : 0)}%</p>
+        <p className="text-[11px] tabular-nums text-muted-foreground">{formatTokens(used)} / {formatTokens(windowSize)}</p>
+      </div>
+    </div>
+  )
 }
 
 function ActivityTrace({
@@ -58,9 +103,13 @@ function ActivityTrace({
   durationMs?: number
   now: number
 }) {
+  const [expanded, setExpanded] = useState(false)
   const elapsed = durationMs ?? (startedAt ? now - startedAt : 0)
   return (
-    <details className="group mb-1.5 w-[85%] text-xs text-muted-foreground">
+    <details
+      className="group mb-1.5 w-[85%] text-xs text-muted-foreground"
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
       <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors hover:bg-muted [&::-webkit-details-marker]:hidden">
         {active ? <LoaderCircle className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
         <span className="tabular-nums">{active ? 'Working' : 'Worked'} for {formatDuration(elapsed)}</span>
@@ -68,7 +117,7 @@ function ActivityTrace({
           <span>· {activities.filter((item) => item.kind === 'tool_call').length} 次工具调用</span>
         )}
       </summary>
-      <div className="mt-1.5 space-y-2 border-l border-border pl-3">
+      {expanded && <div className="mt-1.5 space-y-2 border-l border-border pl-3">
         {activities.map((activity, activityIndex) => {
           if (activity.kind === 'status') {
             return <p key={activityIndex}>{activity.message}</p>
@@ -101,7 +150,7 @@ function ActivityTrace({
             </div>
           )
         })}
-      </div>
+      </div>}
     </details>
   )
 }
@@ -124,12 +173,14 @@ function toSavedMessage(message: ChatEntry): SavedChatMessage {
     output_tokens: message.usage?.output_tokens,
     cached_tokens: message.usage?.cached_tokens,
     total_tokens: message.usage?.total_tokens,
+    context_tokens: message.contextUsage?.context_tokens,
+    context_window: message.contextUsage?.context_window,
     activity_trace: message.activityTrace,
     duration_ms: message.durationMs,
   }
 }
 
-function fromSavedMessage(message: SavedChatMessage): ChatEntry {
+function fromSavedMessage(message: SavedChatMessage, id: string): ChatEntry {
   const usage =
     message.input_tokens == null ||
     message.output_tokens == null ||
@@ -142,15 +193,59 @@ function fromSavedMessage(message: SavedChatMessage): ChatEntry {
           cached_tokens: message.cached_tokens,
           total_tokens: message.total_tokens,
         }
+  const contextUsage =
+    message.context_tokens == null || message.context_window == null
+      ? undefined
+      : {
+          context_tokens: message.context_tokens,
+          context_window: message.context_window,
+        }
   return {
+    id,
     role: message.role,
     content: message.content,
     requestContent: message.request_content ?? undefined,
     usage,
+    contextUsage,
     activityTrace: message.activity_trace ?? undefined,
     durationMs: message.duration_ms ?? undefined,
   }
 }
+
+const MessageBubble = memo(function MessageBubble({
+  message,
+  active,
+  now,
+}: {
+  message: ChatEntry
+  active: boolean
+  now: number
+}) {
+  return (
+    <div className={message.role === 'user' ? 'flex justify-end' : 'flex flex-col items-start'}>
+      {message.role === 'assistant' && (message.activityTrace || message.startedAt || message.durationMs != null) && (
+        <ActivityTrace
+          activities={message.activityTrace ?? []}
+          active={active}
+          startedAt={message.startedAt}
+          durationMs={message.durationMs}
+          now={now}
+        />
+      )}
+      {(message.role === 'user' || message.content) && (
+        <div className={message.role === 'user' ? 'max-w-[85%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground' : 'max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm'}>
+          {message.role === 'user' ? message.content : <Markdown>{message.content}</Markdown>}
+        </div>
+      )}
+      {message.role === 'assistant' && message.usage && (
+        <p className="mt-1 text-[11px] tabular-nums text-muted-foreground">
+          {message.usage.total_tokens.toLocaleString()} tokens（输入 {message.usage.input_tokens.toLocaleString()} · 输出 {message.usage.output_tokens.toLocaleString()}
+          {message.usage.cached_tokens > 0 && ` · 缓存 ${message.usage.cached_tokens.toLocaleString()}`}）
+        </p>
+      )}
+    </div>
+  )
+})
 
 /** 针对当前页的对话面板：模型选择 + 可恢复会话 + 流式回答。 */
 export default function ChatPanel({ doc }: ChatPanelProps) {
@@ -169,9 +264,31 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
   const [clock, setClock] = useState(() => Date.now())
   const [error, setError] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const entrySequenceRef = useRef(0)
+  const scrollFrameRef = useRef<number | null>(null)
+  const assistantFrameRef = useRef<number | null>(null)
+  const pendingAssistantUpdateRef = useRef<Partial<ChatEntry> | null>(null)
   // 仅在用户仍停留在底部附近时跟随流式输出；手动上滑后不再抢回滚动位置。
   const followLatestRef = useRef(true)
   const docReady = doc.parse_status === 'ready'
+  const createEntryId = useCallback(
+    () => `${doc.id}-${Date.now()}-${++entrySequenceRef.current}`,
+    [doc.id],
+  )
+  const getScrollElement = useCallback(() => scrollRef.current, [])
+  const estimateMessageSize = useCallback(() => 180, [])
+  const rowVirtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement,
+    estimateSize: estimateMessageSize,
+    getItemKey: (index) => messages[index]?.id ?? index,
+    overscan: 4,
+  })
+  const conversationTotalTokens = messages.reduce(
+    (total, message) => total + (message.usage?.total_tokens ?? 0),
+    0,
+  )
+  const latestContextUsage = [...messages].reverse().find((message) => message.contextUsage)?.contextUsage
 
   useEffect(() => {
     if (!models.some((model) => model.name === selectedProfile)) {
@@ -180,12 +297,23 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     }
   }, [models, selectedProfile, setSelectedProfile])
 
+  const scheduleScrollToBottom = useCallback(() => {
+    if (!followLatestRef.current || scrollFrameRef.current !== null) return
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null
+      const container = scrollRef.current
+      if (container && followLatestRef.current) container.scrollTop = container.scrollHeight
+    })
+  }, [])
+
   useEffect(() => {
-    const container = scrollRef.current
-    if (container && followLatestRef.current) {
-      container.scrollTop = container.scrollHeight
-    }
-  }, [messages])
+    scheduleScrollToBottom()
+  }, [messages, scheduleScrollToBottom])
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current)
+    if (assistantFrameRef.current !== null) window.cancelAnimationFrame(assistantFrameRef.current)
+  }, [])
 
   useEffect(() => {
     if (!streaming) return
@@ -200,6 +328,33 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     // 留一点容差，避免子像素布局使用户已经在底部却被误判。
     followLatestRef.current =
       container.scrollHeight - container.scrollTop - container.clientHeight < 48
+  }
+
+  function scheduleAssistantUpdate(update: Partial<ChatEntry>) {
+    pendingAssistantUpdateRef.current = {
+      ...pendingAssistantUpdateRef.current,
+      ...update,
+    }
+    if (assistantFrameRef.current !== null) return
+    assistantFrameRef.current = window.requestAnimationFrame(() => {
+      assistantFrameRef.current = null
+      const pending = pendingAssistantUpdateRef.current
+      pendingAssistantUpdateRef.current = null
+      if (!pending) return
+      setMessages((prev) => {
+        const next = [...prev]
+        next[next.length - 1] = { ...next[next.length - 1], ...pending, role: 'assistant' }
+        return next
+      })
+    })
+  }
+
+  function cancelPendingAssistantUpdate() {
+    if (assistantFrameRef.current !== null) {
+      window.cancelAnimationFrame(assistantFrameRef.current)
+      assistantFrameRef.current = null
+    }
+    pendingAssistantUpdateRef.current = null
   }
 
   function startNewConversation() {
@@ -217,7 +372,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
       const conversation = await getConversation(doc.id, id)
       followLatestRef.current = true
       setConversationId(conversation.id)
-      setMessages(conversation.messages.map(fromSavedMessage))
+      setMessages(conversation.messages.map((message) => fromSavedMessage(message, createEntryId())))
       setSelectedProfile(conversation.profile)
       setError(null)
     } catch (e) {
@@ -250,7 +405,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     // 发送新问题是用户主动要求查看最新内容，恢复自动跟随。
     followLatestRef.current = true
     const requestContent = withPageContext(question, currentPage)
-    const userEntry: ChatEntry = { role: 'user', content: question, requestContent }
+    const userEntry: ChatEntry = { id: createEntryId(), role: 'user', content: question, requestContent }
     const history: ChatMessage[] = [
       ...messages.map(({ role, content, requestContent: savedRequestContent }) => ({
         role,
@@ -272,10 +427,17 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     }
 
     const startedAt = Date.now()
+    const assistantEntry: ChatEntry = {
+      id: createEntryId(),
+      role: 'assistant',
+      content: '',
+      activityTrace: [],
+      startedAt,
+    }
     const initialEntries = [
       ...messages,
       userEntry,
-      { role: 'assistant' as const, content: '', activityTrace: [], startedAt },
+      assistantEntry,
     ]
     setMessages(initialEntries)
     setInput('')
@@ -284,6 +446,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
 
     let answer = ''
     let usage: ChatUsage | undefined
+    let contextUsage: ChatContextUsage | undefined
     let activityTrace: ChatActivity[] = []
     let durationMs: number | undefined
     try {
@@ -296,32 +459,19 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
       )) {
         if (ev.type === 'delta') {
           answer += ev.text
-          setMessages((prev) => {
-            const next = [...prev]
-            next[next.length - 1] = { ...next[next.length - 1], role: 'assistant', content: answer }
-            return next
-          })
+          scheduleAssistantUpdate({ content: answer })
         } else if (ev.type === 'activity') {
           activityTrace = [...activityTrace, ev.activity]
-          setMessages((prev) => {
-            const next = [...prev]
-            next[next.length - 1] = { ...next[next.length - 1], activityTrace }
-            return next
-          })
+          scheduleAssistantUpdate({ activityTrace })
         } else if (ev.type === 'usage') {
           usage = ev
-          setMessages((prev) => {
-            const next = [...prev]
-            next[next.length - 1] = { ...next[next.length - 1], role: 'assistant', usage }
-            return next
-          })
+          scheduleAssistantUpdate({ usage })
+        } else if (ev.type === 'context') {
+          contextUsage = ev
+          scheduleAssistantUpdate({ contextUsage })
         } else if (ev.type === 'done') {
           durationMs = ev.duration_ms
-          setMessages((prev) => {
-            const next = [...prev]
-            next[next.length - 1] = { ...next[next.length - 1], durationMs }
-            return next
-          })
+          scheduleAssistantUpdate({ durationMs })
         } else if (ev.type === 'error') {
           durationMs = ev.duration_ms ?? Date.now() - startedAt
           setError(ev.message)
@@ -330,9 +480,10 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
+      cancelPendingAssistantUpdate()
       durationMs ??= Date.now() - startedAt
       const savedEntries: ChatEntry[] = answer || activityTrace.length > 0
-        ? [...messages, userEntry, { role: 'assistant', content: answer, usage, activityTrace, durationMs }]
+        ? [...messages, userEntry, { ...assistantEntry, content: answer, usage, contextUsage, activityTrace, durationMs }]
         : [...messages, userEntry]
       setMessages(savedEntries)
       setStreaming(false)
@@ -401,36 +552,41 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
         </select>
       </div>
 
-      <div ref={scrollRef} onScroll={updateFollowLatest} className="flex-1 space-y-4 overflow-y-auto p-4">
+      <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
+        <p className="text-xs tabular-nums text-muted-foreground">
+          本对话累计 <span className="font-medium text-foreground">{conversationTotalTokens.toLocaleString()}</span> tokens
+        </p>
+        <ContextRing context={latestContextUsage} />
+      </div>
+
+      <div ref={scrollRef} onScroll={updateFollowLatest} className="flex-1 overflow-y-auto p-4">
         {messages.length === 0 && (
           <p className="text-sm text-muted-foreground">
             {docReady ? '选择已有对话，或开始一段新对话。' : '文档正在进行 OCR 解析，完成后即可提问。'}
           </p>
         )}
-        {messages.map((message, index) => (
-          <div key={index} className={message.role === 'user' ? 'flex justify-end' : 'flex flex-col items-start'}>
-            {message.role === 'assistant' && (message.activityTrace || message.startedAt || message.durationMs != null) && (
-              <ActivityTrace
-                activities={message.activityTrace ?? []}
-                active={streaming && index === messages.length - 1}
-                startedAt={message.startedAt}
-                durationMs={message.durationMs}
-                now={clock}
-              />
-            )}
-            {(message.role === 'user' || message.content) && (
-              <div className={message.role === 'user' ? 'max-w-[85%] rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground' : 'max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm'}>
-                {message.role === 'user' ? message.content : <Markdown>{message.content}</Markdown>}
-              </div>
-            )}
-            {message.role === 'assistant' && message.usage && (
-              <p className="mt-1 text-[11px] tabular-nums text-muted-foreground">
-                {message.usage.total_tokens.toLocaleString()} tokens（输入 {message.usage.input_tokens.toLocaleString()} · 输出 {message.usage.output_tokens.toLocaleString()}
-                {message.usage.cached_tokens > 0 && ` · 缓存 ${message.usage.cached_tokens.toLocaleString()}`}）
-              </p>
-            )}
+        {messages.length > 0 && (
+          <div
+            className="relative w-full"
+            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const message = messages[virtualRow.index]
+              const active = streaming && virtualRow.index === messages.length - 1
+              return (
+                <div
+                  key={message.id}
+                  data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  className="absolute left-0 top-0 w-full pb-4"
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                >
+                  <MessageBubble message={message} active={active} now={active ? clock : 0} />
+                </div>
+              )
+            })}
           </div>
-        ))}
+        )}
         {error && <p className="text-sm text-destructive">出错了：{error}</p>}
       </div>
 
@@ -439,7 +595,7 @@ export default function ChatPanel({ doc }: ChatPanelProps) {
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
-            disabled={!docReady || streaming}
+            disabled={!docReady}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()

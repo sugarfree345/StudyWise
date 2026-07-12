@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
@@ -17,15 +18,18 @@ function normalizeMathDelimiters(markdown: string): string {
 }
 
 /** 大模型回答的 Markdown 渲染：表格、代码高亮，以及 KaTeX 数学公式。 */
-export default function Markdown({ children }: { children: string }) {
+function Markdown({ children }: { children: string }) {
+  const normalized = useMemo(() => normalizeMathDelimiters(children), [children])
   return (
     <div className="prose prose-sm max-w-none dark:prose-invert prose-pre:bg-muted prose-pre:text-foreground">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeHighlight, rehypeKatex]}
       >
-        {normalizeMathDelimiters(children)}
+        {normalized}
       </ReactMarkdown>
     </div>
   )
 }
+
+export default memo(Markdown)

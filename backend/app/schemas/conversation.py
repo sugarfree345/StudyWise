@@ -12,6 +12,8 @@ class ConversationMessageIn(BaseModel):
     output_tokens: int | None = None
     cached_tokens: int | None = None
     total_tokens: int | None = None
+    context_tokens: int | None = None
+    context_window: int | None = None
     activity_trace: list[dict] | None = None
     duration_ms: int | None = None
 
