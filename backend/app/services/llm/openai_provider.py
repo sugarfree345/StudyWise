@@ -1,8 +1,7 @@
-"""OpenAI 风格适配器。
+"""OpenAI Chat Completions 兼容端点适配器。
 
-覆盖面最广：OpenAI 本体，以及 DeepSeek、通义千问（DashScope 兼容模式）、
-Kimi/Moonshot、智谱 GLM，还有本地 Ollama / vLLM / LM Studio —— 它们都暴露
-OpenAI 兼容端点，只需换 base_url。
+用于 DeepSeek、通义千问（DashScope 兼容模式）、Kimi/Moonshot、智谱 GLM，
+以及本地 Ollama / vLLM / LM Studio。OpenAI 官方端点由 Responses Provider 处理。
 
 工具调用：流式增量里累积 tool_calls，本轮结束后执行工具，把结果作为 role=tool
 消息回给模型；图片无法塞进 tool 消息，改用随后的一条 user 消息（image_url）承载。
@@ -10,8 +9,6 @@ OpenAI 兼容端点，只需换 base_url。
 
 import json
 from collections.abc import AsyncIterator
-from urllib.parse import urlparse
-
 from openai import AsyncOpenAI
 
 from app.services.llm.base import MAX_TOOL_ROUNDS, ChatMessage, ToolRunner, Usage
@@ -28,28 +25,6 @@ def _token_limit_kwarg(model_id: str, max_tokens: int) -> dict:
     if model_id.lower().startswith(_COMPLETION_TOKEN_PREFIXES):
         return {"max_completion_tokens": max_tokens}
     return {"max_tokens": max_tokens}
-
-
-def _reasoning_effort_kwarg(model_id: str, has_tools: bool) -> dict:
-    """补齐 GPT-5.6 Luna 在 Chat Completions 中的工具调用限制。
-
-    Luna 在此接口中只能以 reasoning_effort="none" 调用 function tools；
-    使用 Responses API 则没有这项组合限制。项目当前使用 Chat Completions，
-    因此仅在实际传入工具时显式选择兼容档位。
-    """
-    if model_id.lower() == "gpt-5.6-luna" and has_tools:
-        return {"reasoning_effort": "none"}
-    return {}
-
-
-def _is_official_openai_endpoint(base_url: str | None) -> bool:
-    """只对 OpenAI 官方端点发送其专有缓存参数。
-
-    DeepSeek、Ollama 等同样使用 Chat Completions 的请求外形，但未必接受
-    ``prompt_cache_key``，因此不能仅按 provider 风格判断。
-    """
-    endpoint = base_url or "https://api.openai.com/v1"
-    return urlparse(endpoint).hostname == "api.openai.com"
 
 
 def _image_followup(tool_call_id: str, result: ToolResult) -> dict | None:
@@ -94,20 +69,12 @@ class OpenAIProvider:
                 "messages": conversation,
                 "stream": True,
                 **_token_limit_kwarg(self._profile.model_id, self._profile.max_tokens),
-                **_reasoning_effort_kwarg(self._profile.model_id, bool(tool_defs)),
             }
             if tool_defs:
                 kwargs["tools"] = tool_defs
             if usage is not None:
                 # 流式默认不返回用量，需显式开启；末尾会多一个带 usage 的 chunk。
                 kwargs["stream_options"] = {"include_usage": True}
-            # 同一个文档会话复用同一个稳定键，帮助 OpenAI 路由到持有相同
-            # 提示前缀缓存的机器。兼容端点不一定识别这些字段，故严格限于
-            # api.openai.com。gpt-5.5 只支持 24h 的扩展缓存保留策略。
-            if prompt_cache_key and _is_official_openai_endpoint(self._profile.base_url):
-                kwargs["prompt_cache_key"] = prompt_cache_key
-                if self._profile.model_id.lower().startswith("gpt-5.5"):
-                    kwargs["prompt_cache_retention"] = "24h"
             stream = await self._client.chat.completions.create(**kwargs)
 
             content_parts: list[str] = []
