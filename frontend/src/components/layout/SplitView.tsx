@@ -3,10 +3,12 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 interface SplitViewProps {
   left: ReactNode
   right: ReactNode
+  onResizeStart?: () => void
+  onResizeEnd?: () => void
 }
 
 /** 左右对照布局：左侧资料原文，右侧学习面板，页码保持同步。 */
-export default function SplitView({ left, right }: SplitViewProps) {
+export default function SplitView({ left, right, onResizeStart, onResizeEnd }: SplitViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [leftWidth, setLeftWidth] = useState(() => {
     const saved = Number(window.localStorage.getItem('studywise-split-left-width'))
@@ -22,14 +24,19 @@ export default function SplitView({ left, right }: SplitViewProps) {
       const next = Math.min(75, Math.max(25, ((event.clientX - rect.left) / rect.width) * 100))
       setLeftWidth(next)
     }
-    const stop = () => setDragging(false)
+    const stop = () => {
+      setDragging(false)
+      onResizeEnd?.()
+    }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
     return () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
     }
-  }, [dragging])
+  }, [dragging, onResizeEnd])
 
   useEffect(() => {
     window.localStorage.setItem('studywise-split-left-width', String(leftWidth))
@@ -44,6 +51,7 @@ export default function SplitView({ left, right }: SplitViewProps) {
         aria-label="调整 PDF 与对话面板宽度"
         onPointerDown={(event) => {
           event.preventDefault()
+          onResizeStart?.()
           setDragging(true)
         }}
         className={`group relative w-1 shrink-0 cursor-col-resize bg-border transition-colors hover:bg-primary ${dragging ? 'bg-primary' : ''}`}

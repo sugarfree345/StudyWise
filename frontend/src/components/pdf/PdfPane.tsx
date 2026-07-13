@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -14,6 +14,12 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 
 interface PdfPaneProps {
   doc: DocumentInfo
+  resizingLayout?: boolean
+}
+
+interface ResizeAnchor {
+  page: number
+  progress: number
 }
 
 /**
@@ -21,7 +27,7 @@ interface PdfPaneProps {
  * 滚动时用 IntersectionObserver 推断“当前页”，同步到全局状态；
  * 右侧的上一页/下一页按钮改变 currentPage 时，则把对应页滚动到视口。
  */
-export default function PdfPane({ doc }: PdfPaneProps) {
+export default function PdfPane({ doc, resizingLayout = false }: PdfPaneProps) {
   const currentPage = useStudyStore((s) => s.currentPage)
   const goToPage = useStudyStore((s) => s.goToPage)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -32,6 +38,71 @@ export default function PdfPane({ doc }: PdfPaneProps) {
 
   // 记录滚动推断出的可见页，用来区分“按钮翻页”和“滚动翻页”，避免相互抖动。
   const visiblePageRef = useRef(currentPage)
+  const resizingRef = useRef(false)
+  const resizeAnchorRef = useRef<ResizeAnchor | null>(null)
+  const restoreFrameRef = useRef<number | null>(null)
+
+  const captureResizeAnchor = useCallback(() => {
+    const container = containerRef.current
+    const page = visiblePageRef.current
+    const element = pageRefs.current[page - 1]
+    if (!container || !element) return
+    const containerRect = container.getBoundingClientRect()
+    const pageRect = element.getBoundingClientRect()
+    const progress = Math.min(
+      1,
+      Math.max(0, (containerRect.top - pageRect.top) / Math.max(1, pageRect.height)),
+    )
+    resizeAnchorRef.current = { page, progress }
+  }, [])
+
+  const restoreResizeAnchor = useCallback(() => {
+    const container = containerRef.current
+    const anchor = resizeAnchorRef.current
+    const element = anchor ? pageRefs.current[anchor.page - 1] : null
+    if (!container || !anchor || !element) return
+    const containerRect = container.getBoundingClientRect()
+    const pageRect = element.getBoundingClientRect()
+    const currentTop = pageRect.top - containerRect.top
+    const desiredTop = -anchor.progress * pageRect.height
+    container.scrollTop += currentTop - desiredTop
+  }, [])
+
+  useLayoutEffect(() => {
+    if (resizingLayout) {
+      resizingRef.current = true
+      captureResizeAnchor()
+      return
+    }
+    if (!resizingRef.current) return
+
+    // 等最终宽度和 PDF 页面尺寸都提交后再解锁页码观察器。
+    restoreFrameRef.current = window.requestAnimationFrame(() => {
+      restoreFrameRef.current = window.requestAnimationFrame(() => {
+        restoreFrameRef.current = null
+        restoreResizeAnchor()
+        const anchor = resizeAnchorRef.current
+        if (anchor) {
+          visiblePageRef.current = anchor.page
+          goToPage(anchor.page)
+        }
+        resizingRef.current = false
+        resizeAnchorRef.current = null
+      })
+    })
+    return () => {
+      if (restoreFrameRef.current !== null) {
+        window.cancelAnimationFrame(restoreFrameRef.current)
+        restoreFrameRef.current = null
+      }
+    }
+  }, [resizingLayout, captureResizeAnchor, restoreResizeAnchor, goToPage])
+
+  useLayoutEffect(() => {
+    if (!resizingRef.current) return
+    const frame = window.requestAnimationFrame(restoreResizeAnchor)
+    return () => window.cancelAnimationFrame(frame)
+  }, [pageWidth, restoreResizeAnchor])
 
   useEffect(() => {
     const container = containerRef.current
@@ -52,11 +123,12 @@ export default function PdfPane({ doc }: PdfPaneProps) {
   // 监听各页可见比例，取最靠上、可见度最高的一页作为当前页。
   useEffect(() => {
     const container = containerRef.current
-    if (!container || numPages === 0) return
+    if (!container || numPages === 0 || resizingLayout) return
 
     const ratios = new Map<number, number>()
     const observer = new IntersectionObserver(
       (entries) => {
+        if (resizingRef.current) return
         for (const entry of entries) {
           const page = Number((entry.target as HTMLElement).dataset.page)
           ratios.set(page, entry.isIntersecting ? entry.intersectionRatio : 0)
@@ -81,7 +153,7 @@ export default function PdfPane({ doc }: PdfPaneProps) {
       if (el) observer.observe(el)
     }
     return () => observer.disconnect()
-  }, [numPages, goToPage])
+  }, [numPages, goToPage, resizingLayout])
 
   // 外部（按钮/页码输入）改变 currentPage 时，把该页滚动到视口顶部。
   useEffect(() => {
@@ -124,6 +196,14 @@ export default function PdfPane({ doc }: PdfPaneProps) {
                   }
                   renderAnnotationLayer
                   renderTextLayer
+                  onRenderSuccess={() => {
+                    if (
+                      resizingRef.current &&
+                      resizeAnchorRef.current?.page === index + 1
+                    ) {
+                      restoreResizeAnchor()
+                    }
+                  }}
                   className="overflow-hidden shadow-lg"
                 />
               </div>

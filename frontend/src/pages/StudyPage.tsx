@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft } from 'lucide-react'
 import { Link, useParams } from 'react-router'
@@ -13,6 +13,9 @@ export default function StudyPage() {
   const { documentId } = useParams()
   const id = Number(documentId)
   const setPageCount = useStudyStore((s) => s.setPageCount)
+  const [resizingLayout, setResizingLayout] = useState(false)
+  const startLayoutResize = useCallback(() => setResizingLayout(true), [])
+  const endLayoutResize = useCallback(() => setResizingLayout(false), [])
 
   const {
     data: doc,
@@ -50,7 +53,12 @@ export default function StudyPage() {
         </Link>
         <h1 className="truncate text-sm font-medium">{doc.filename}</h1>
       </header>
-      <SplitView left={<PdfPane doc={doc} />} right={<StudyPane doc={doc} />} />
+      <SplitView
+        left={<PdfPane doc={doc} resizingLayout={resizingLayout} />}
+        right={<StudyPane doc={doc} />}
+        onResizeStart={startLayoutResize}
+        onResizeEnd={endLayoutResize}
+      />
     </div>
   )
 }
